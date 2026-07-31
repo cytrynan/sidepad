@@ -39,6 +39,6 @@ struct ConnectionView: View {
     }
 }
 
-#Preview {
-    ConnectionView()
-}
+// NOTE: #Preview マクロは使用しない。
+// xtool 環境では Apple 独自マクロ (PreviewsMacros) のプラグインが無く
+// ビルドエラーになる（2026-08-01 実測）。プレビューは実機確認で代替する。
