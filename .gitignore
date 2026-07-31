@@ -28,10 +28,6 @@ coverage/
 dist/
 build/
 
-# Steering files (task management - 必要に応じて)
-.steering/*
-!.steering/.gitkeep
-
 # Claude Code local settings
 .claude/settings.local.json
 
