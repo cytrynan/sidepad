@@ -32,3 +32,15 @@ build/
 .claude/settings.local.json
 
 # ↓ /init-stack 実行で言語固有のエントリがここに追記されます
+
+# Swift / xtool (iPad app skeleton)
+.DS_Store
+/.build
+/Packages
+xcuserdata/
+DerivedData/
+.swiftpm/configuration/registries.json
+.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+.netrc
+/xtool
+
