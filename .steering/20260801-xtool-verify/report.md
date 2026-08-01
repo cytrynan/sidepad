@@ -38,3 +38,10 @@ Apple ID が不要な部分は**全て完了**。`xtool dev build` が「Darwin 
 
 - Opus 最終検証で子の報告した `xtool dev build --sign` が誤りと判明（1.17.0 に `--sign` は無く `--ipa` のみ）→ 手順書修正済み
 - Fable 受入検証: `xtool-doctor.sh` を再実行し、[OK]/[TODO] が報告どおりであることを独立に確認（3層ゲート）
+
+## 実機インストール経過（2026-08-01 深夜・中断中）
+
+- 完了: xtool auth login（トークン2027-08まで）／usbipd経由のiPad列挙（レシピ: detach→usbmuxd先行再起動→attach）／ペアリング（iPad＿cy）／ビルド・署名・プロビジョニング／証明書失効のK承認
+- 未完: アプリ転送（`xtool dev` が Connecting 100% 後 opTimeout → 再試行で muxError → WSL E_UNEXPECTED → Windows側スタブ Device in error state）
+- 次の一手: K管理者で `usbipd unbind→bind --force→attach`（busid 5-2）→ usbmuxd再起動 → `printf "y\n" | script -qec "xtool dev" /dev/null`。あと2回失敗で Plan B（`xtool dev build --ipa` → Sideloadly）
+- 根本容疑: USBPcap（usbipdが非互換警告）。技術詳細の正本: ~/.claude/dev/ios-dev-without-mac.md 追記2
