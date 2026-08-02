@@ -11,14 +11,26 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(pc_capture_spike src/main.cpp)
 
-# d3d11.lib / dxgi.lib are pulled in via #pragma comment(lib, ...) in
-# main.cpp, but listing them here too is harmless and makes the dependency
-# visible without opening the source file.
-target_link_libraries(pc_capture_spike PRIVATE d3d11 dxgi)
+# The control for the capture measurement: a vsync-paced screen-change
+# generator, so capture fps always has a trustworthy source fps to be
+# compared against. See src/testsource.cpp for why a timer-driven window
+# was not good enough.
+add_executable(pc_test_source src/testsource.cpp)
 
-# Desktop Duplication needs Windows 8+ headers (DXGI 1.2 / IDXGIOutput1).
-target_compile_definitions(pc_capture_spike PRIVATE
-  _WIN32_WINNT=0x0602
-  WIN32_LEAN_AND_MEAN
-  NOMINMAX
-)
+# d3d11.lib / dxgi.lib are pulled in via #pragma comment(lib, ...) in the
+# sources, but listing them here too is harmless and makes the dependency
+# visible without opening the source file.
+foreach(target pc_capture_spike pc_test_source)
+  target_link_libraries(${target} PRIVATE d3d11 dxgi)
+
+  # Desktop Duplication needs Windows 8+ headers (DXGI 1.2 / IDXGIOutput1).
+  # UNICODE keeps the resource-id macros (IDC_ARROW and friends) on their
+  # wide form, matching the ...W APIs both sources call explicitly.
+  target_compile_definitions(${target} PRIVATE
+    _WIN32_WINNT=0x0602
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+    UNICODE
+    _UNICODE
+  )
+endforeach()

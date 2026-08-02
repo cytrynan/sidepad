@@ -45,8 +45,25 @@ pwsh -File pc\build.ps1 -Run     # configure + build + run immediately
 
 `build.ps1` finds your Visual Studio install via `vswhere.exe`, sources
 `vcvars64.bat` for the MSVC environment, and drives VS's bundled CMake +
-Ninja to produce `pc\build\pc_capture_spike.exe`. It does not touch
-anything outside `pc\build\` and needs no elevation.
+Ninja to produce `pc\build\pc_capture_spike.exe` and
+`pc\build\pc_test_source.exe`. It does not touch anything outside
+`pc\build\` and needs no elevation.
+
+## Measuring it
+
+Both binaries take `[run_seconds] [output_index]`. Because capture is event
+driven, a capture-only run on an idle desktop measures nothing — start the
+source first, then the spike, and compare the two rates:
+
+```powershell
+Start-Process .\build\pc_test_source.exe -ArgumentList 40,0
+.\build\pc_capture_spike.exe 30 0
+```
+
+`pc_test_source` paces itself off the vblank via `Present(1, 0)`, so its
+rate is trustworthy in a way a timer-driven window is not — see the header
+comment in `src/testsource.cpp`, and the Result section for what happens
+when you skip this.
 
 ### Manual equivalent
 
@@ -72,16 +89,86 @@ behavior on most machines is a machine-wide (admin) install — check the
 "Install for me only" / per-user option if you need to avoid elevation.
 Was not attempted on this machine since the toolset was already present.
 
-## Result (measured on this machine, 2026-08-01)
+## Result (measured on this machine, 2026-08-03)
 
 DXGI Desktop Duplication only hands back a new frame when the desktop
 image actually changes (it's delta/event driven, not a fixed-rate poll).
 On a fully idle desktop the spike captured **1 frame in 15 seconds** —
-correct behavior, not a bug, but not a useful throughput number.
+correct behavior, not a bug, but not a useful throughput number. Which
+also means **the number this spike prints is bounded by the source's
+repaint rate, not by how fast capture can go** — a fact that turned out to
+matter more here than anything else.
 
-To get a real measurement, a second window was driven to repaint at a
-steady ~60 Hz (a WinForms window with a 16 ms timer changing its
-background color) while the spike ran concurrently:
+Measured against `pc_test_source` (vsync-paced `Present(1, 0)`), 30 s on
+`\\.\DISPLAY2`, 3440x1440 @ 60 Hz:
+
+```
+[frame    120] fps= 60.08  acquire_latency avg=16.448ms max=18.444ms (window=60 frames / 0.999s)
+               wall: acquire=987ms idle_timeout=0ms(0x) cursor_only=0ms(0x) other=12ms
+               source: presents=60 (60.08/s) coalesced=0 max_accum=1 | src_interval avg=16.64ms max=18.54ms
+               vsync gaps (16.67ms period): 1x:60
+...
+Done. Total frames captured: 1799
+```
+
+Every one of the 30 windows looked like that. Reading it:
+
+- **Flat 60.00 fps for the whole run** — exactly the display refresh rate,
+  which is the ceiling here. No decay, no stalls.
+- **`coalesced=0`, `max_accum=1` in every window**: the OS never had to
+  merge two presents into one frame, i.e. the capture loop did not fall
+  behind a single time.
+- **Every inter-frame gap lands in the `1x` bucket** (one refresh period).
+  No dropped vsyncs.
+- `acquire_latency avg=16.4 ms` is *not* a cost — it is the loop blocking
+  inside `AcquireNextFrame` waiting for a frame that doesn't exist yet.
+  Sitting at exactly one refresh period is the signature of keeping up.
+- Real work outside `AcquireNextFrame` (`other`) is **12-19 ms per
+  1000 ms, ~1.5%**.
+
+### The earlier "fps degradation" was the measuring stick, not the capture
+
+The 2026-08-01 run reported `59.93 → 6.80 → 53.02 → 41.40 → 37.10` and was
+recorded as a monotonic decline needing investigation. It was neither
+monotonic nor a capture problem. That run's source was a WinForms window
+repainting on a 16 ms timer, and re-running the spike against the same kind
+of source reproduces the old numbers on demand:
+
+```
+[frame    180] fps= 36.74  acquire_latency avg=26.943ms max=47.918ms (window=60 frames / 1.633s)
+               source: presents=60 (36.74/s) coalesced=0 max_accum=1 | src_interval avg=27.22ms max=48.41ms
+               vsync gaps (16.67ms period): 1x:23 2x:36 3x:1
+```
+
+37 fps at a 26.7 ms average interval — the old window-5 line almost to the
+decimal. The histogram gives the mechanism away: gaps split between `1x`
+and `2x`, because a **16 ms timer against a 16.667 ms refresh period beats**
+— each repaint either makes the next vblank or misses it and rides the one
+after. The average of that mix is ~26 ms ≈ 38 fps. Arithmetic, not
+thermals, not GPU power state, not a leak. And `max_accum=1` here too:
+capture kept up even while the source stuttered.
+
+The old `6.80 fps / 8.8 s` window was a different thing again — plain idle.
+`60 × avg_latency = 1.93 s` against an `8.818 s` window leaves 6.9 s in
+which no frame arrived at all. The wall-clock breakdown the spike now
+prints separates those two cases directly, which is why it was added.
+
+**Takeaway for the next step (encode)**: the capture stage is not a
+bottleneck and has no degradation mechanism to fix. ~98% of the frame
+budget is unspent, so there is real room for AMF encode + transport. Note
+also that low fps on an idle desktop is the *desired* behaviour, not a
+defect — nothing changed means nothing to encode or send.
+
+**Still unmeasured**: whether capture can exceed 60 fps. The primary output
+here is 60 Hz, so this run cannot distinguish "60 is the display's ceiling"
+from "60 is capture's ceiling". That matters if the iPad's 120 Hz ProMotion
+is to be driven, and needs a 120 Hz output (or a 120 Hz virtual display) to
+answer.
+
+### Original 2026-08-01 log, kept for reference
+
+The source below was a WinForms window with a 16 ms timer — see above for
+why that made the numbers meaningless:
 
 ```
 [frame     60] fps= 59.93  acquire_latency avg=16.520ms max=29.667ms (window=60 frames / 1.001s)
@@ -93,32 +180,13 @@ background color) while the spike ran concurrently:
 Done. Total frames captured: 340
 ```
 
-Reading this:
+The guess written down at the time — DWM/driver throttling or a Radeon 780M
+power-state transition — was wrong on both counts. The `37.10 / 26.671 ms`
+line is the timer/refresh beat, and the `6.80 / 8.8 s` line is 6.9 s of
+idle desktop. Two unrelated causes, read as one trend.
 
-- **Steady state is close to the source's repaint rate** (~55-60 fps
-  against a ~62.5 Hz — 16 ms — source timer), with acquire latency mostly
-  in the **12-25 ms average** range. That's the time `AcquireNextFrame`
-  blocked waiting for DXGI to hand over the next texture — not full
-  glass-to-glass latency, and not including encode/transport (neither
-  exists yet).
-- **The 6.80 fps / 8.8 s window is a real anomaly worth flagging**, not
-  noise: something (most likely DWM/driver throttling a background or
-  briefly-unfocused animation window, or a GPU power-state transition on
-  the Radeon 780M's integrated graphics) caused a multi-second stall in
-  desktop repaints during that window, which shows up here as a latency
-  spike (max 250 ms in that window) rather than a capture failure. Worth
-  re-testing once real video content (not a synthetic timer window) is the
-  source, and once the actual target monitor/output is confirmed (see
-  Known gaps).
-- This was captured on `\\.\DISPLAY2` (3440x1440) — the primary output at
-  index 0 on this machine happened to be an ultrawide external monitor,
-  not the laptop panel. See Known gaps below.
-
-**Takeaway for the next step (encode)**: capture-side latency budget looks
-comfortably small (double-digit ms) relative to a 16.6 ms (60 fps) frame
-budget, so there's headroom for AMF encode + transport, but real budget
-will depend heavily on actual source content (video/games change every
-frame; idle desktop use won't).
+Also captured on `\\.\DISPLAY2` (3440x1440): output index 0 on this machine
+is an ultrawide external monitor, not the laptop panel. See Known gaps.
 
 ## Known gaps / not implemented (by design — spike scope)
 
@@ -149,6 +217,8 @@ frame; idle desktop use won't).
 ## Files
 
 - `src/main.cpp` — the spike itself, heavily commented.
+- `src/testsource.cpp` — vsync-paced screen-change generator, the control
+  for any capture measurement.
 - `CMakeLists.txt` — minimal CMake setup, C++17, links `d3d11`/`dxgi`.
 - `build.ps1` — locates VS via `vswhere`, sources `vcvars64.bat`, drives
   VS's bundled CMake+Ninja. `-Run` flag builds and runs in one step.
