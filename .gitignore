@@ -42,5 +42,9 @@ DerivedData/
 .swiftpm/configuration/registries.json
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .netrc
-/xtool
+/xtool/*
+# インストールパイプラインのスクリプトは追跡する（ビルド成果物 *.ipa/*.app は除外のまま）
+!/xtool/install-to-ipad.ps1
+!/xtool/build-grab-ipa.sh
+!/xtool/chunked_install.py
 

@@ -43,5 +43,8 @@ Apple ID が不要な部分は**全て完了**。`xtool dev build` が「Darwin 
 
 - 完了: xtool auth login（トークン2027-08まで）／usbipd経由のiPad列挙（レシピ: detach→usbmuxd先行再起動→attach）／ペアリング（iPad＿cy）／ビルド・署名・プロビジョニング／証明書失効のK承認
 - 未完: アプリ転送（`xtool dev` が Connecting 100% 後 opTimeout → 再試行で muxError → WSL E_UNEXPECTED → Windows側スタブ Device in error state）
-- 次の一手: K管理者で `usbipd unbind→bind --force→attach`（busid 5-2）→ usbmuxd再起動 → `printf "y\n" | script -qec "xtool dev" /dev/null`。あと2回失敗で Plan B（`xtool dev build --ipa` → Sideloadly）
-- 根本容疑: USBPcap（usbipdが非互換警告）。技術詳細の正本: ~/.claude/dev/ios-dev-without-mac.md 追記2
+- 2026-08-01 深夜（続き）: K管理者の unbind→bind --force 実施済み（busid 3-1 に変化）。リセット後の `xtool dev` は**2回とも Connecting 100% → WSL E_UNEXPECTED で失敗**。未署名 `Sidepad.ipa`（158KB）を書き出し `xtool\Sidepad.ipa` へ配置済み（`build --ipa` は署名しない実測）
+- 2026-08-02: K管理者で USBPcap 撤去＋再起動 → **症状変わらず**（真因ではなかった）
+- **2026-08-03 未明: ✅ 実機インストール成功**。真因＝usbipバルクOUTの大チャンク死（ideviceinstallerの64KB書き込みが0バイトからMUX_ERROR、**4KBチャンクなら通る**）。手順＝xtoolハング中に署名済みipaを横取り（`/root/.cache/xtool/tmp-staging-*/staging/app.ipa`）→ `xtool/chunked_install.py`（pymobiledevice3）で4KBチャンク転送＋installation_proxy Install → InstallComplete
+- 2026-08-03: K がデベロッパモードON（iOS16+要件）→ **Sidepad 実機起動確認**。インストール一連を `xtool/install-to-ipad.ps1` に1コマンド化し**実走で再検証済み**（busid自動検出→リンク確立→build-grab-ipa.sh→リンクリセット→chunked_install.py→ideviceinstaller -l 受入検証、約2分）
+- 技術詳細の正本: ~/.claude/dev/ios-dev-without-mac.md 追記4・5
