@@ -17,10 +17,17 @@ add_executable(pc_capture_spike src/main.cpp)
 # was not good enough.
 add_executable(pc_test_source src/testsource.cpp)
 
+# Capture -> AMF H.264 encode spike. AMF headers are vendored (v1.5.2, see
+# pc/third_party/AMF/README.md); the runtime amfrt64.dll ships with the AMD
+# driver and is loaded dynamically, so no AMF import library is linked.
+add_executable(pc_encode_spike src/encode_main.cpp src/amf_encoder.cpp)
+target_include_directories(pc_encode_spike PRIVATE third_party/AMF/include)
+target_link_libraries(pc_encode_spike PRIVATE winmm)
+
 # d3d11.lib / dxgi.lib are pulled in via #pragma comment(lib, ...) in the
 # sources, but listing them here too is harmless and makes the dependency
 # visible without opening the source file.
-foreach(target pc_capture_spike pc_test_source)
+foreach(target pc_capture_spike pc_test_source pc_encode_spike)
   target_link_libraries(${target} PRIVATE d3d11 dxgi)
 
   # Desktop Duplication needs Windows 8+ headers (DXGI 1.2 / IDXGIOutput1).

@@ -1,12 +1,18 @@
-# pc/ — PC-side capture spike
+# pc/ — PC-side capture + encode spikes
 
-Technical spike for the PC side of sidepad (iPad as a low-latency extended
-display for Windows). This proves out the cheapest path from "primary
-monitor changed" to "we're holding a GPU texture of the new frame", and
-measures how fast that loop actually runs.
+Technical spikes for the PC side of sidepad (iPad as a low-latency extended
+display for Windows):
 
-**Scope**: capture only. No video encoding, no network transport. Both are
-marked with comments in `src/main.cpp` at the point where they'd plug in.
+- `pc_capture_spike` — DXGI Desktop Duplication capture, measured 2026-08-03
+  (flat 60 fps, non-bottleneck; details below).
+- `pc_encode_spike` — capture + **AMF H.264 hardware encode** configured from
+  the 2026-08-06 USB datalink measurements, verified same day (see
+  "Encode spike" section).
+- `pc_test_source` — vsync-paced screen-change generator, the control both
+  measurements run against.
+
+**Not yet implemented**: network transport (the encoded bitstream currently
+goes to stats + an optional `.h264` dump) and the IddCx virtual display.
 
 ## What it does
 
@@ -188,6 +194,35 @@ idle desktop. Two unrelated causes, read as one trend.
 Also captured on `\\.\DISPLAY2` (3440x1440): output index 0 on this machine
 is an ultrawide external monitor, not the laptop panel. See Known gaps.
 
+## Encode spike (`pc_encode_spike`, 2026-08-06)
+
+Capture -> AMF H.264 encode on the same D3D11 device (zero-copy: the desktop
+texture is GPU-copied into a pool texture that AMF wraps directly). Every
+numeric default is a measured design input from
+`.steering/20260803-usb-datalink-probe/result.md`:
+
+| Measured (USB link, 2026-08-06) | Encoder setting |
+|---|---|
+| 16 KiB writes are the latency sweet spot (p99 2.5 ms @40 Mbps) | `SLICES_PER_FRAME = ceil(frame_budget / 16Ki)` so one slice NAL ~= one transport write |
+| 209-249 Mbps effective ceiling | 40 Mbps CBR default (`--bitrate-mbps` up to 80 measured-safe) |
+| rare single 15-30 ms hiccups; deep buffering unwanted | VBV = 1 frame of bits; busy encoder => drop frame (never queue); no periodic IDR — intra refresh sweeps the frame over ~1 s |
+
+```powershell
+Start-Process .\build\pc_test_source.exe -ArgumentList 35,0
+.\build\pc_encode_spike.exe --seconds 25 --output out.h264   # optional: --bitrate-mbps N --display N
+```
+
+The run ends with PASS/FAIL lines against the acceptance criteria in
+`.steering/20260806-amf-encoder/requirements.md`.
+
+Accepted run on this machine (3440x1440@60, 40 Mbps CBR, test source active):
+1501/1501 frames encoded, 0 drops, latency avg 7.6 ms / p99 9.8 ms
+(criterion: <=12 ms — the mandatory `SetMultithreadProtected` serialization
+costs ~3 ms of p99), bitrate 36.3 Mbps, frame bytes p99 = 1.07x budget,
+slice median 13-14 KB, exactly 1 IDR, and `ffprobe -count_frames` decodes
+all 1501 frames. Direct BGRA submit works on this runtime (no converter
+fallback needed); latency floor is ~5 ms even for near-empty frames.
+
 ## Known gaps / not implemented (by design — spike scope)
 
 - **No encode.** The point where a real `ID3D11Texture2D` would be handed
@@ -216,9 +251,15 @@ is an ultrawide external monitor, not the laptop panel. See Known gaps.
 
 ## Files
 
-- `src/main.cpp` — the spike itself, heavily commented.
+- `src/main.cpp` — the capture spike, heavily commented.
 - `src/testsource.cpp` — vsync-paced screen-change generator, the control
   for any capture measurement.
+- `src/amf_encoder.h/.cpp` — AMF H.264 encoder wrapper (measured design
+  inputs, surface pool, drop-when-busy policy).
+- `src/encode_main.cpp` — `pc_encode_spike`: capture loop + drain thread +
+  stats + acceptance PASS/FAIL.
+- `third_party/AMF/` — vendored AMF v1.5.2 headers (MIT); runtime
+  `amfrt64.dll` is loaded dynamically from the AMD driver.
 - `CMakeLists.txt` — minimal CMake setup, C++17, links `d3d11`/`dxgi`.
 - `build.ps1` — locates VS via `vswhere`, sources `vcvars64.bat`, drives
   VS's bundled CMake+Ninja. `-Run` flag builds and runs in one step.
