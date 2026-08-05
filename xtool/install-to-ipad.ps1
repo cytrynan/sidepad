@@ -29,6 +29,15 @@ function Reset-Link {
 $busid = Get-IpadBusId
 Write-Host "iPad busid: $busid"
 
+# 0. Windows側リポジトリ → WSLネイティブ側(/root/sidepad) へソース同期。
+#    ビルドは /mnt/c 上では通らないため WSL 側コピーがビルドの正になる。
+#    同期を挟まないと「Windows側で編集 → 古いコードが黙ってインストールされる」事故になる
+#    （2026-08-03 実測。旧版スクリプトはこの段が無く /root/sidepad は clone 直後のままだった）。
+$repoWsl = ((Split-Path -Parent $PSScriptRoot) -replace '\\', '/' -replace '^C:', '/mnt/c')
+wsl -d $distro -u root bash -c "rsync -a --delete --exclude '.git' --exclude '.build' --exclude 'pc/build' --exclude '.claude' '$repoWsl/' /root/sidepad/"
+if ($LASTEXITCODE -ne 0) { throw "ソース同期失敗 (rsync)" }
+Write-Host "SYNCED -> /root/sidepad"
+
 # 1. リンク確立（xtoolのプロビジョニング/署名にもデバイス接続が必要）
 Reset-Link $busid
 

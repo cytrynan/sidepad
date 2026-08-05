@@ -1,0 +1,272 @@
+{
+  "generated_at": "2026-08-06T08:00:55",
+  "host": "127.0.0.1:5555",
+  "platform": "win32",
+  "pid": 42120,
+  "results": [
+    {
+      "label": "max-4K",
+      "chunk": 4096,
+      "bitrate_target_mbps": 0.0,
+      "elapsed_sec": 6.001,
+      "pc_sent_packets": 45633,
+      "pc_sent_bytes": 187140933,
+      "pc_throughput_MBps": 29.74,
+      "pc_throughput_Mbps": 249.48,
+      "rtt_idle_ms": {
+        "n": 30,
+        "min": 0.969,
+        "p50": 1.236,
+        "p99": 2.572,
+        "max": 2.572
+      },
+      "rtt_loaded_ms": {
+        "n": 96,
+        "p50": 11.416,
+        "p95": 17.637,
+        "p99": 22.062,
+        "max": 31.816
+      },
+      "acks_received": 2852,
+      "device": {
+        "samples": 45633,
+        "owdExcessMaxMs": 25.712325,
+        "packets": 45633,
+        "throughputMbps": 249.1004268996017,
+        "owdExcessP95Ms": 11.279183,
+        "maxArrivalGapMs": 15.629375,
+        "durationSec": 6.010136083,
+        "throughputMBps": 29.695084917497837,
+        "outOfOrder": 0,
+        "missingSeq": 0,
+        "cpuPercent": 16.565870276378085,
+        "interarrivalJitterMs": 0.20715379043309462,
+        "label": "max-4K",
+        "bytes": 187140933,
+        "owdExcessP50Ms": 9.745341,
+        "meanPacketBytes": 4101,
+        "owdExcessP99Ms": 11.956725
+      }
+    },
+    {
+      "label": "max-16K",
+      "chunk": 16384,
+      "bitrate_target_mbps": 0.0,
+      "elapsed_sec": 6.008,
+      "pc_sent_packets": 9599,
+      "pc_sent_bytes": 157318011,
+      "pc_throughput_MBps": 24.97,
+      "pc_throughput_Mbps": 209.47,
+      "rtt_idle_ms": {
+        "n": 30,
+        "min": 0.674,
+        "p50": 1.103,
+        "p99": 1.266,
+        "max": 1.266
+      },
+      "rtt_loaded_ms": {
+        "n": 94,
+        "p50": 9.55,
+        "p95": 19.299,
+        "p99": 31.695,
+        "max": 32.106
+      },
+      "acks_received": 599,
+      "device": {
+        "owdExcessMaxMs": 28.073225,
+        "owdExcessP50Ms": 8.192525,
+        "packets": 9599,
+        "durationSec": 6.009788208,
+        "owdExcessP99Ms": 22.865125,
+        "label": "max-16K",
+        "maxArrivalGapMs": 18.548041,
+        "throughputMBps": 24.964298475460673,
+        "owdExcessP95Ms": 11.921,
+        "missingSeq": 0,
+        "throughputMbps": 209.4157139056372,
+        "outOfOrder": 0,
+        "cpuPercent": 11.140350855766437,
+        "samples": 9599,
+        "bytes": 157318011,
+        "interarrivalJitterMs": 1.0974959617485789,
+        "meanPacketBytes": 16389
+      }
+    },
+    {
+      "label": "max-64K",
+      "chunk": 65536,
+      "bitrate_target_mbps": 0.0,
+      "elapsed_sec": 6.009,
+      "pc_sent_packets": 2611,
+      "pc_sent_bytes": 171127551,
+      "pc_throughput_MBps": 27.16,
+      "pc_throughput_Mbps": 227.81,
+      "rtt_idle_ms": {
+        "n": 30,
+        "min": 0.784,
+        "p50": 1.08,
+        "p99": 1.369,
+        "max": 1.369
+      },
+      "rtt_loaded_ms": {
+        "n": 95,
+        "p50": 12.383,
+        "p95": 21.064,
+        "p99": 24.6,
+        "max": 30.727
+      },
+      "acks_received": 163,
+      "device": {
+        "outOfOrder": 0,
+        "durationSec": 6.011374959,
+        "owdExcessMaxMs": 27.529484,
+        "owdExcessP50Ms": 9.700234,
+        "missingSeq": 0,
+        "samples": 2611,
+        "owdExcessP99Ms": 23.240134,
+        "packets": 2611,
+        "label": "max-64K",
+        "bytes": 171127551,
+        "throughputMBps": 27.14852281404672,
+        "owdExcessP95Ms": 15.145759,
+        "interarrivalJitterMs": 2.525501763969228,
+        "meanPacketBytes": 65541,
+        "cpuPercent": 264118811614.77362,
+        "throughputMbps": 227.73831566609485,
+        "maxArrivalGapMs": 19.950542
+      }
+    },
+    {
+      "label": "max-256K",
+      "chunk": 262144,
+      "bitrate_target_mbps": 0.0,
+      "elapsed_sec": 6.008,
+      "pc_sent_packets": 705,
+      "pc_sent_bytes": 184815045,
+      "pc_throughput_MBps": 29.34,
+      "pc_throughput_Mbps": 246.11,
+      "rtt_idle_ms": {
+        "n": 30,
+        "min": 0.761,
+        "p50": 1.104,
+        "p99": 1.772,
+        "max": 1.772
+      },
+      "rtt_loaded_ms": {
+        "n": 85,
+        "p50": 28.243,
+        "p95": 37.181,
+        "p99": 44.705,
+        "max": 46.241
+      },
+      "acks_received": 44,
+      "device": {
+        "samples": 705,
+        "owdExcessMaxMs": 37.665967,
+        "packets": 705,
+        "throughputMbps": 245.30202614564743,
+        "owdExcessP95Ms": 28.05375,
+        "maxArrivalGapMs": 23.391583,
+        "durationSec": 6.027346709,
+        "throughputMBps": 29.242280262189798,
+        "outOfOrder": 0,
+        "missingSeq": 0,
+        "cpuPercent": 9.425165050768328,
+        "interarrivalJitterMs": 3.59532967045079,
+        "label": "max-256K",
+        "bytes": 184815045,
+        "meanPacketBytes": 262149,
+        "owdExcessP50Ms": 22.057784,
+        "owdExcessP99Ms": 35.453292
+      }
+    },
+    {
+      "label": "paced40-16K",
+      "chunk": 16384,
+      "bitrate_target_mbps": 40.0,
+      "elapsed_sec": 6.005,
+      "pc_sent_packets": 1829,
+      "pc_sent_bytes": 29975481,
+      "pc_throughput_MBps": 4.76,
+      "pc_throughput_Mbps": 39.93,
+      "rtt_idle_ms": {
+        "n": 30,
+        "min": 0.896,
+        "p50": 1.12,
+        "p99": 2.148,
+        "max": 2.148
+      },
+      "rtt_loaded_ms": {
+        "n": 96,
+        "p50": 1.641,
+        "p95": 3.574,
+        "p99": 3.79,
+        "max": 3.831
+      },
+      "acks_received": 114,
+      "device": {
+        "owdExcessMaxMs": 3.161633,
+        "owdExcessP50Ms": 1.389383,
+        "packets": 1829,
+        "durationSec": 5.992867375,
+        "owdExcessP99Ms": 2.51195,
+        "label": "paced40-16K",
+        "maxArrivalGapMs": 15.238041,
+        "throughputMBps": 4.770145001185436,
+        "owdExcessP95Ms": 2.284266,
+        "missingSeq": 0,
+        "throughputMbps": 40.01487651810416,
+        "outOfOrder": 0,
+        "cpuPercent": 5.188800404501261,
+        "samples": 1829,
+        "bytes": 29975481,
+        "interarrivalJitterMs": 0.5617868269933406,
+        "meanPacketBytes": 16389
+      }
+    },
+    {
+      "label": "paced40-64K",
+      "chunk": 65536,
+      "bitrate_target_mbps": 40.0,
+      "elapsed_sec": 6.01,
+      "pc_sent_packets": 458,
+      "pc_sent_bytes": 30017778,
+      "pc_throughput_MBps": 4.76,
+      "pc_throughput_Mbps": 39.96,
+      "rtt_idle_ms": {
+        "n": 30,
+        "min": 0.776,
+        "p50": 1.108,
+        "p99": 1.187,
+        "max": 1.187
+      },
+      "rtt_loaded_ms": {
+        "n": 96,
+        "p50": 2.864,
+        "p95": 3.779,
+        "p99": 5.039,
+        "max": 15.192
+      },
+      "acks_received": 28,
+      "device": {
+        "samples": 458,
+        "owdExcessMaxMs": 15.4888,
+        "packets": 458,
+        "throughputMbps": 40.0569412469997,
+        "owdExcessP95Ms": 2.897091,
+        "maxArrivalGapMs": 30.168709,
+        "durationSec": 5.9950215,
+        "throughputMBps": 4.775159507632219,
+        "outOfOrder": 0,
+        "missingSeq": 0,
+        "cpuPercent": 2.683103355907524,
+        "interarrivalJitterMs": 0.8295223112843199,
+        "label": "paced40-64K",
+        "bytes": 30017778,
+        "meanPacketBytes": 65541,
+        "owdExcessP50Ms": 0.589641,
+        "owdExcessP99Ms": 15.078058
+      }
+    }
+  ]
+}
