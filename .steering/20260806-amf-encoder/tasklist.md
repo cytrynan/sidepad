@@ -37,7 +37,7 @@ generated:
 
 - [x] `pc/README.md` にpc_encode_spikeの使い方を追記
 - [x] 実装後の振り返り（このファイル下部）＋`.steering/`のresult相当を本ファイルに記録
-- [~] commit・push（有無を報告に明記）
+- [x] commit・push（commit 0fd435f・push済み・origin/main一致確認済み）
 
 ---
 
