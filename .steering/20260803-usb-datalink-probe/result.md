@@ -73,6 +73,7 @@ status: done
 
 ## 環境の現状メモ（2026-08-06）
 - iPad は **Windows/AMDS側**に居る（usbipd は Not shared）。開発インストールに戻すには管理者で `usbipd bind`
-- AMDS(AppleMobileDeviceSupport64.msi 単体) 導入済み・自動起動。iTunes本体も入っている（撤去はK判断待ち。AMDSだけ残せば足りる可能性）
+- AMDS(AppleMobileDeviceSupport64.msi 単体) 導入済み・自動起動。iTunes本体も入っている
+  （2026-08-06 K承認: 動作が安定したら撤去検証＝iTunes MSIだけアンインストール→AMDS稼働と直結経路の再確認。AMDSは残す）
 - Bonjour は今回のバンドルに同梱されず（3ファイル構成）
 - Store版「Apple Devices」でAMDSが入るかは未確認のまま（もう不要になったので追わない）
