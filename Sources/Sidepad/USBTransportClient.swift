@@ -194,6 +194,9 @@ final class USBTransportClient: TransportClient, @unchecked Sendable {
                 stats.reset(label: label, ackInterval: ackInterval)
                 lastSnapshotNs = 0
                 onMeasurementReset?()
+                // ゼロ化したスナップショットを即時発行（前セッションの固定表示を消すため。
+                // 発行しないと次のデータパケット到着まで @Published 側に旧値が残る）
+                onSnapshot?(stats.snapshot())
                 log("計測開始: \(label.isEmpty ? "(no label)" : label) ackごと=\(ackInterval)")
 
             case .reportRequest:

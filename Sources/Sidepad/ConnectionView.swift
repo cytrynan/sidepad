@@ -5,6 +5,9 @@
 // VideoPipeline（デコード）→ LatestFrameStore → MetalFrameRenderer（描画）に流す。
 // 実機ではコンソールが見えないので、動作ログもこの画面に出す。
 // 統計オーバーレイは画面タップで表示/非表示を切り替える。
+// 切断後も直前セッションの最終統計を固定表示する（受入検証で数値を読むため）。
+// 切断時に VideoPipeline.flushStats() で最終値まで発行してから凍結し、
+// 次接続の RESET でゼロが発行されて固定表示は消える。
 
 import Combine
 import SwiftUI
@@ -39,6 +42,8 @@ final class LinkViewModel: ObservableObject {
             if state != .receiving {
                 // 切断＝ストリームの区切り。次の接続は SPS/PPS から来る前提でセッションを畳む。
                 pipeline.reset()
+                // 残りのデコードを吐き切ってから最終統計を発行（固定表示用）
+                pipeline.flushStats()
             }
             Task { @MainActor in self?.state = state }
         }
@@ -85,6 +90,9 @@ struct ConnectionView: View {
 
             if model.state != .receiving {
                 waitingView
+                if hasSessionStats, showOverlay {
+                    statsOverlay
+                }
             } else if showOverlay {
                 statsOverlay
             }
@@ -120,8 +128,18 @@ struct ConnectionView: View {
 
     // MARK: - 受信中の統計オーバーレイ（タップで表示/非表示）
 
+    /// 直前セッションの統計が残っているか（切断後の固定表示に使う）。
+    private var hasSessionStats: Bool {
+        model.pipelineStats.decode.decodedFrames > 0 || model.snapshot.packets > 0
+    }
+
     private var statsOverlay: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if model.state != .receiving {
+                Text("最終統計（切断済み）")
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.orange)
+            }
             Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 4) {
                 metricRow("デコードfps", String(format: "%.1f", model.pipelineStats.decodedFPS))
                 metricRow("デコード済", "\(model.pipelineStats.decode.decodedFrames)")
@@ -148,7 +166,10 @@ struct ConnectionView: View {
             .padding(12)
             .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
 
-            logsView
+            // 切断中は waitingView 側がログを出すので二重表示を避ける
+            if model.state == .receiving {
+                logsView
+            }
 
             Spacer()
         }

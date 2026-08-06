@@ -79,6 +79,16 @@ final class VideoPipeline: @unchecked Sendable {
         }
     }
 
+    /// 切断時に呼ぶ: デコード待ちを吐き切った後（直列キューなので enqueue 済みの
+    /// decode がすべて先に走る）、スロットルを無視して現在値を発行する。
+    /// これが無いと切断後の固定表示が最後の〜250ms分（120Hzで最大約30フレーム）
+    /// 欠けた値で凍り、「decodedFrames == 受信フレーム数」の受入照合が偽欠落になる。
+    func flushStats() {
+        queue.async { [self] in
+            emitStatsIfNeeded(force: true)
+        }
+    }
+
     /// PC側の計測リセット（RESETメッセージ）に同期して統計をゼロに戻す。
     /// LinkStats（受信パケット数）が 0 に戻るのに合わせないと
     /// 「decodedFrames == 受信フレーム数」の受入照合が2回目の走行から崩れる（レビュー指摘M3）。
@@ -94,15 +104,19 @@ final class VideoPipeline: @unchecked Sendable {
             recvToDoneMaxMs = 0
             lastEmitNs = 0
             lastEmitDecoded = 0
+            // ゼロを即時発行する。これが無いと @Published 側に前セッションの値が残り、
+            // 新走行が1フレームもデコードせずに終わったとき前回の最終統計を
+            // 今回の結果として読んでしまう（レビュー指摘M2）。
+            emitStatsIfNeeded(force: true)
         }
     }
 
     // MARK: - 統計（decode キュー上）
 
-    private func emitStatsIfNeeded() {
+    private func emitStatsIfNeeded(force: Bool = false) {
         guard let onStats else { return }
         let now = monotonicNanoseconds()
-        guard lastEmitNs == 0 || now &- lastEmitNs > 250_000_000 else { return }
+        guard force || lastEmitNs == 0 || now &- lastEmitNs > 250_000_000 else { return }
 
         var stats = PipelineStats()
         stats.decode = decoder.snapshot()
