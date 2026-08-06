@@ -4,13 +4,15 @@
 // with the encoder configured from the 2026-08-06 USB datalink measurements
 // (see pc/src/amf_encoder.h and .steering/20260806-amf-encoder/design.md).
 //
-// The transport is NOT connected yet: output goes to run statistics and an
-// optional Annex-B .h264 dump, and the run ends with PASS/FAIL lines against
-// the acceptance criteria in .steering/20260806-amf-encoder/requirements.md.
+// Output goes to run statistics, an optional Annex-B .h264 dump, and -- with
+// --send -- the USB transport (StreamSender: one DATA message per frame,
+// 16 KiB socket writes, usbmux direct or plain TCP). The run ends with
+// PASS/FAIL lines against .steering/20260806-amf-encoder/requirements.md
+// plus, when sending, .steering/20260806-usb-transport-integration/.
 //
 // Usage:
 //   pc_encode_spike [--seconds N] [--bitrate-mbps N] [--output file.h264]
-//                   [--display N]
+//                   [--display N] [--send usb[:PORT] | tcp:HOST:PORT]
 //
 // Run pc_test_source alongside so the desktop actually changes at 60 fps;
 // on an idle desktop the fps/bitrate acceptance checks will fail by design.
@@ -40,6 +42,7 @@
 #include <vector>
 
 #include "amf_encoder.h"
+#include "stream_sender.h"  // winsock2.h; safe after windows.h thanks to WIN32_LEAN_AND_MEAN
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -159,6 +162,19 @@ double PercentileLL(std::vector<long long> v, double p) {
     return static_cast<double>(v[idx]);
 }
 
+// Minimal scan for `"key": <number>` in the device report JSON. Both report
+// producers (Swift JSONEncoder, mock_receiver.py) emit flat objects with
+// unique keys, so substring search is unambiguous; no JSON library needed.
+long long ExtractJsonLL(const std::string& json, const char* key,
+                        long long fallback) {
+    const std::string needle = std::string("\"") + key + "\"";
+    size_t pos = json.find(needle);
+    if (pos == std::string::npos) return fallback;
+    pos = json.find(':', pos + needle.size());
+    if (pos == std::string::npos) return fallback;
+    return std::strtoll(json.c_str() + pos + 1, nullptr, 10);
+}
+
 // Annex-B walk: append the byte size of every VCL NAL (types 1 and 5, i.e.
 // non-IDR / IDR slices) in `data` to `slice_sizes`. A "slice" here is exactly
 // the unit the transport will later send in one burst, which is why its size
@@ -195,6 +211,10 @@ struct Options {
     long long bitrate_bps = 40'000'000;
     UINT display = 0;
     std::string output_path;
+    // "" = no transport (statistics/dump only, the pre-integration behavior).
+    // "usb" | "usb:PORT" = usbmux direct to the iPad's listen port (7789).
+    // "tcp:HOST:PORT"    = plain TCP (mock receiver / wired-LAN fallback).
+    std::string send_target;
 };
 
 Options ParseArgs(int argc, char** argv) {
@@ -215,6 +235,8 @@ Options ParseArgs(int argc, char** argv) {
             opt.display = static_cast<UINT>(std::atoi(need_value("--display")));
         } else if (std::strcmp(argv[i], "--output") == 0) {
             opt.output_path = need_value("--output");
+        } else if (std::strcmp(argv[i], "--send") == 0) {
+            opt.send_target = need_value("--send");
         } else {
             std::fprintf(stderr, "[fatal] unknown arg: %s\n", argv[i]);
             std::exit(1);
@@ -273,6 +295,40 @@ int main(int argc, char** argv) {
         }
     }
 
+    StreamSender sender;
+    if (!opt.send_target.empty()) {
+        std::string err;
+        bool ok = false;
+        if (opt.send_target.rfind("usb", 0) == 0) {
+            uint16_t port = 7789;
+            if (opt.send_target.size() > 4 && opt.send_target[3] == ':') {
+                port = static_cast<uint16_t>(
+                    std::atoi(opt.send_target.c_str() + 4));
+            }
+            ok = sender.ConnectUsbmux(port, &err);
+        } else if (opt.send_target.rfind("tcp:", 0) == 0) {
+            const std::string rest = opt.send_target.substr(4);
+            const size_t colon = rest.rfind(':');
+            if (colon == std::string::npos || colon == 0) {
+                err = "--send tcp form is tcp:HOST:PORT";
+            } else {
+                ok = sender.ConnectTcp(
+                    rest.substr(0, colon),
+                    static_cast<uint16_t>(std::atoi(rest.c_str() + colon + 1)),
+                    &err);
+            }
+        } else {
+            err = "unknown --send target (use usb[:PORT] or tcp:HOST:PORT)";
+        }
+        if (!ok || !sender.SendReset("encode-stream", /*ack_interval=*/64)) {
+            std::fprintf(stderr, "[fatal] transport: %s\n",
+                         ok ? "reset message failed" : err.c_str());
+            return 1;
+        }
+        std::printf("transport connected: %s (frame = 1 DATA msg, 16KiB writes)\n\n",
+                    opt.send_target.c_str());
+    }
+
     LARGE_INTEGER qpc_freq{};
     QueryPerformanceFrequency(&qpc_freq);
     const long long freq = qpc_freq.QuadPart;
@@ -295,6 +351,8 @@ int main(int argc, char** argv) {
     auto window_start = Clock::now();
 
     std::atomic<bool> stop{false};
+    std::atomic<bool> send_failed{false};
+    long long sent_frames = 0;  // drain thread during the run, main after join
 
     std::thread drain([&] {
         while (!stop.load(std::memory_order_relaxed)) {
@@ -320,6 +378,22 @@ int main(int argc, char** argv) {
                 encoded_bytes += static_cast<long long>(f.size);
                 window_bytes += static_cast<long long>(f.size);
                 if (f.idr) ++idr_frames;
+
+                // Synchronous send on this thread is deliberate: if the link
+                // stalls, PollOutput stops draining, AMF's input fills, and
+                // the capture side drops frames -- the existing "stale frames
+                // die, latest wins" path doubles as backpressure. No queue.
+                if (sender.connected() && !send_failed.load()) {
+                    if (sender.SendFrame(static_cast<uint64_t>(sent_frames),
+                                         MonotonicNs(), f.data, f.size)) {
+                        ++sent_frames;
+                    } else {
+                        std::fprintf(stderr,
+                                     "[fatal] transport send failed (link broken)\n");
+                        send_failed = true;
+                        stop = true;
+                    }
+                }
                 if (dump) std::fwrite(f.data, 1, f.size, dump);
 
                 encoded_frames.fetch_add(1, std::memory_order_relaxed);
@@ -356,7 +430,7 @@ int main(int argc, char** argv) {
     const auto run_until = Clock::now() + std::chrono::seconds(opt.seconds);
     const auto run_start = Clock::now();
 
-    while (Clock::now() < run_until) {
+    while (Clock::now() < run_until && !stop.load(std::memory_order_relaxed)) {
         ComPtr<IDXGIResource> desktop_resource;
         DXGI_OUTDUPL_FRAME_INFO frame_info{};
         HRESULT hr = ctx.duplication->AcquireNextFrame(
@@ -447,10 +521,44 @@ int main(int argc, char** argv) {
                 slice_bytes_all.size(), slice_med,
                 PercentileLL(slice_bytes_all, 0.99));
 
+    // --- Transport summary (only with --send) ---
+    const bool sending = !opt.send_target.empty();
+    std::string report_json;
+    long long report_missing = -1;
+    long long report_packets = -1;
+    if (sending) {
+        const auto& sns = sender.send_elapsed_ns();
+        std::vector<double> send_ms;
+        send_ms.reserve(sns.size());
+        for (long long ns : sns) send_ms.push_back(ns / 1e6);
+        const double send_avg =
+            send_ms.empty() ? 0.0
+                            : std::accumulate(send_ms.begin(), send_ms.end(), 0.0) /
+                                  send_ms.size();
+        std::printf("transport: sent=%lld frames  send ms avg=%.2f p99=%.2f "
+                    "max=%.2f  acks=%lld\n",
+                    sent_frames, send_avg, Percentile(send_ms, 0.99),
+                    send_ms.empty() ? 0.0
+                                    : *std::max_element(send_ms.begin(),
+                                                        send_ms.end()),
+                    sender.acks_received());
+        if (!send_failed) {
+            report_json = sender.RequestReport(/*timeout_ms=*/5000);
+        }
+        if (report_json.empty()) {
+            std::printf("device report: (none)\n\n");
+        } else {
+            report_missing = ExtractJsonLL(report_json, "missingSeq", -1);
+            report_packets = ExtractJsonLL(report_json, "packets", -1);
+            std::printf("device report: %s\n\n", report_json.c_str());
+        }
+    }
+
     struct Check {
         const char* name;
         bool pass;
-    } checks[] = {
+    };
+    std::vector<Check> checks = {
         {"encode fps >= 55            ", enc_fps >= 55.0},
         // 12ms, not 10: the mandatory immediate-context thread protection
         // (SetMultithreadProtected) costs ~3ms of p99 -- see requirements.md.
@@ -466,6 +574,14 @@ int main(int argc, char** argv) {
         {"idr frames == 1 (no periodic)", idr_frames == 1},
         {"drop counter implemented    ", total_drops >= 0},
     };
+    if (sending) {
+        checks.push_back({"transport link stayed up    ", !send_failed.load()});
+        checks.push_back({"transport report received   ", !report_json.empty()});
+        checks.push_back(
+            {"transport missingSeq == 0   ", report_missing == 0});
+        checks.push_back({"transport packets == sent   ",
+                          report_packets == sent_frames && sent_frames > 0});
+    }
     bool all_pass = true;
     for (const auto& c : checks) {
         std::printf("[%s] %s\n", c.pass ? "PASS" : "FAIL", c.name);

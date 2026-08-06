@@ -20,9 +20,11 @@ add_executable(pc_test_source src/testsource.cpp)
 # Capture -> AMF H.264 encode spike. AMF headers are vendored (v1.5.2, see
 # pc/third_party/AMF/README.md); the runtime amfrt64.dll ships with the AMD
 # driver and is loaded dynamically, so no AMF import library is linked.
-add_executable(pc_encode_spike src/encode_main.cpp src/amf_encoder.cpp)
+add_executable(pc_encode_spike src/encode_main.cpp src/amf_encoder.cpp
+                               src/stream_sender.cpp)
 target_include_directories(pc_encode_spike PRIVATE third_party/AMF/include)
-target_link_libraries(pc_encode_spike PRIVATE winmm)
+# winmm: timeBeginPeriod / ws2_32: StreamSender (usbmux + TCP transport)
+target_link_libraries(pc_encode_spike PRIVATE winmm ws2_32)
 
 # d3d11.lib / dxgi.lib are pulled in via #pragma comment(lib, ...) in the
 # sources, but listing them here too is harmless and makes the dependency

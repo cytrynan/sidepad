@@ -10,9 +10,13 @@ display for Windows):
   "Encode spike" section).
 - `pc_test_source` — vsync-paced screen-change generator, the control both
   measurements run against.
+- **USB transport** (2026-08-06, `--send` on `pc_encode_spike`) — encoded
+  frames go to the iPad over usbmux direct (probe wire format, one DATA
+  message per frame, 16 KiB socket writes). Verified end-to-end on the real
+  device: 1201/1201 frames, 0 missing, one-way excess p99 4.3 ms.
 
-**Not yet implemented**: network transport (the encoded bitstream currently
-goes to stats + an optional `.h264` dump) and the IddCx virtual display.
+**Not yet implemented**: iPad-side decode/display of the received frames,
+and the IddCx virtual display.
 
 ## What it does
 
@@ -223,14 +227,53 @@ slice median 13-14 KB, exactly 1 IDR, and `ffprobe -count_frames` decodes
 all 1501 frames. Direct BGRA submit works on this runtime (no converter
 fallback needed); latency floor is ~5 ms even for near-empty frames.
 
+## USB transport (`--send`, 2026-08-06)
+
+`src/stream_sender.h/.cpp` connects the encoder output to the USB datalink.
+Wire format is the probe protocol already baked into the iPad app
+(`Sources/Sidepad/ProbeProtocol.swift`): `[u32 length][u8 type][payload]`,
+little-endian; one encoded frame = one DATA message
+(`[u64 seq][u64 t_pc_ns][Annex-B access unit]`), so the iPad's
+`Framing.drain` hands complete access units to `onFrameData`. Socket writes
+are chunked at 16 KiB — the measured latency sweet spot. Sends run
+synchronously on the drain thread: if the link stalls, `PollOutput` stops,
+AMF's input fills, and the capture side drops frames — the encoder's
+existing "stale frames die, latest wins" policy doubles as backpressure.
+
+```powershell
+# Real device: iPad connected over USB-C, Sidepad app foregrounded
+.\build\pc_encode_spike.exe --seconds 20 --send usb
+
+# Local loopback check without the device (byte-identity verification):
+python ..\probe\mock_receiver.py --port 7789 --out reassembled.h264   # terminal 1
+.\build\pc_encode_spike.exe --seconds 20 --send tcp:127.0.0.1:7789 --output dump.h264
+fc /b dump.h264 reassembled.h264    # must be identical
+```
+
+The run additionally judges: link stayed up, device report received,
+`missingSeq == 0`, received packet count == sent frames.
+
+Accepted real-device run (2026-08-06, 3440x1440@60, 40 Mbps): 1201/1201
+frames, missingSeq 0, out-of-order 0, one-way excess p50 3.4 / p99 4.3 /
+max 9.4 ms, max arrival gap 22 ms (the known rare hiccup), iPad-side CPU
+9.7%, per-frame send time p99 0.22 ms. Local loopback run was byte-identical
+(`fc /b` over 87.7 MB) and ffprobe-decodable.
+
+Notes for future readers:
+- With Wi-Fi sync enabled, AMDS `ListDevices` can list the same iPad twice
+  (USB and Network, different DeviceIDs). `stream_sender.cpp` picks the
+  DeviceID belonging to the `ConnectionType=USB` entry specifically and
+  prints which one it chose.
+- The plist responses are parsed by string scan and assume XML; a binary
+  plist answer fails loudly with an explicit message.
+
 ## Known gaps / not implemented (by design — spike scope)
 
-- **No encode.** The point where a real `ID3D11Texture2D` would be handed
-  to AMD's AMF encoder (zero-copy, GPU-to-GPU, via
-  `AMFContext::CreateSurfaceFromDX11Native`) is marked with a comment in
-  `src/main.cpp`.
-- **No transport.** Sending the encoded bitstream to the iPad is not
-  implemented.
+- **`pc_capture_spike` itself does no encode/transport** (those live in
+  `pc_encode_spike`; the capture spike stays a pure capture measurement).
+- **iPad-side decode/display is not connected yet** — the device receives,
+  verifies, and reports on frames but does not yet feed them to
+  VideoToolbox/Metal (next task).
 - **No `DXGI_ERROR_ACCESS_LOST` recovery.** This happens on resolution
   change, GPU driver reset, or switching to a secure desktop (UAC prompt).
   The spike detects it and exits; a real implementation needs to recreate
@@ -257,7 +300,11 @@ fallback needed); latency floor is ~5 ms even for near-empty frames.
 - `src/amf_encoder.h/.cpp` — AMF H.264 encoder wrapper (measured design
   inputs, surface pool, drop-when-busy policy).
 - `src/encode_main.cpp` — `pc_encode_spike`: capture loop + drain thread +
-  stats + acceptance PASS/FAIL.
+  stats + acceptance PASS/FAIL (+ `--send` transport wiring).
+- `src/stream_sender.h/.cpp` — USB transport (usbmux direct / plain TCP,
+  probe wire format, 16 KiB writes).
+- `probe/mock_receiver.py` — local mock of the iPad receiver for
+  byte-identity verification without the device.
 - `third_party/AMF/` — vendored AMF v1.5.2 headers (MIT); runtime
   `amfrt64.dll` is loaded dynamically from the AMD driver.
 - `CMakeLists.txt` — minimal CMake setup, C++17, links `d3d11`/`dxgi`.
