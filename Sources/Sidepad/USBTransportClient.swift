@@ -35,6 +35,9 @@ final class USBTransportClient: TransportClient, @unchecked Sendable {
 
     var onStateChange: ((ConnectionState) -> Void)?
     var onFrameData: ((Data) -> Void)?
+    /// PC側の計測リセット（RESETメッセージ）通知。デコード側の統計を LinkStats と同期して
+    /// ゼロに戻すために使う（受入照合「decodedFrames == 受信フレーム数」の前提）。
+    var onMeasurementReset: (() -> Void)?
     /// ライブ表示用（約10Hz）。
     var onSnapshot: ((LinkSnapshot) -> Void)?
     /// 画面に出す動作ログ（実機はコンソールが見えないので UI に出す）。
@@ -190,6 +193,7 @@ final class USBTransportClient: TransportClient, @unchecked Sendable {
                 }
                 stats.reset(label: label, ackInterval: ackInterval)
                 lastSnapshotNs = 0
+                onMeasurementReset?()
                 log("計測開始: \(label.isEmpty ? "(no label)" : label) ackごと=\(ackInterval)")
 
             case .reportRequest:
