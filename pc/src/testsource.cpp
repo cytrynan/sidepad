@@ -17,7 +17,13 @@
 // a source-side number to be compared against. If both say 40 fps, capture
 // is innocent; if the source says 100 and capture says 40, capture is not.
 //
-// Usage: pc_test_source [run_seconds] [output_index]
+// Usage: pc_test_source [run_seconds] [output_index] [novsync]
+//
+// novsync: Present(0, 0) instead of Present(1, 0). Flip-model without
+// ALLOW_TEARING still throttles on the present queue, so the achieved rate
+// approximates the DWM composition rate of that monitor -- which is the
+// question when a secondary display claims 120Hz but sources pace at 60
+// (mixed-refresh setups; see .steering/20260807-iddcx-virtual-display/).
 
 #include <windows.h>
 #include <d3d11.h>
@@ -28,6 +34,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -93,6 +100,7 @@ int main(int argc, char** argv) {
     const int run_seconds = (argc > 1) ? std::atoi(argv[1]) : 15;
     const UINT output_index =
         (argc > 2) ? static_cast<UINT>(std::atoi(argv[2])) : 0u;
+    const bool vsync = !(argc > 3 && std::strcmp(argv[3], "novsync") == 0);
 
     // Unbuffered: when stdout is a file or pipe the CRT switches to full
     // buffering, so a run that gets killed rather than exiting cleanly loses
@@ -154,7 +162,8 @@ int main(int argc, char** argv) {
                                               nullptr, swapchain.GetAddressOf()),
               "CreateSwapChainForHwnd");
 
-    std::printf("sidepad test source: vsync-paced D3D11 present\n");
+    std::printf("sidepad test source: %s D3D11 present\n",
+                vsync ? "vsync-paced" : "queue-throttled (novsync)");
     std::printf("Running for %d seconds on output %u, %dx%d at (%ld,%ld)\n\n",
                 run_seconds, output_index, kWindowWidth, kWindowHeight, place.left,
                 place.top);
@@ -200,8 +209,9 @@ int main(int argc, char** argv) {
         context->ClearRenderTargetView(rtv.Get(), color);
 
         // Present(1, 0): block until the next vblank. This, not a timer, is
-        // what makes the source rate trustworthy.
-        hr = swapchain->Present(1, 0);
+        // what makes the source rate trustworthy. (novsync: Present(0, 0),
+        // rate limited by the present queue = ~DWM composition rate.)
+        hr = swapchain->Present(vsync ? 1 : 0, 0);
         if (hr == DXGI_STATUS_OCCLUDED) {
             // The window is fully covered or minimised. DWM stops
             // compositing it, Present returns immediately, and the desktop

@@ -13,6 +13,7 @@
 // Usage:
 //   pc_encode_spike [--seconds N] [--bitrate-mbps N] [--output file.h264]
 //                   [--display N] [--send usb[:PORT] | tcp:HOST:PORT]
+//                   [--list-displays]
 //
 // Run pc_test_source alongside so the desktop actually changes at 60 fps;
 // on an idle desktop the fps/bitrate acceptance checks will fail by design.
@@ -141,6 +142,87 @@ int DisplayRefreshHz(const wchar_t* device_name) {
     return 60;
 }
 
+// --list-displays: every adapter x output, then exit. The IddCx virtual
+// display (VDD) may enumerate under its own display-only adapter rather than
+// the render GPU; --display N only reaches outputs on the default D3D11
+// adapter (adapter 0), so this is how we find out which case we're in
+// (.steering/20260807-iddcx-virtual-display/).
+int ListDisplays() {
+    ComPtr<IDXGIFactory1> factory;
+    FailIfErr(CreateDXGIFactory1(IID_PPV_ARGS(factory.GetAddressOf())),
+              "CreateDXGIFactory1");
+    bool target_found = false;  // 2048x1536@120 (IddCx導入の受入基準1)
+    for (UINT a = 0;; ++a) {
+        ComPtr<IDXGIAdapter1> adapter;
+        if (factory->EnumAdapters1(a, adapter.GetAddressOf()) ==
+            DXGI_ERROR_NOT_FOUND) {
+            break;
+        }
+        DXGI_ADAPTER_DESC1 ad{};
+        adapter->GetDesc1(&ad);
+        std::printf("adapter %u: %ls%s\n", a, ad.Description,
+                    (ad.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) ? " (software)" : "");
+        for (UINT o = 0;; ++o) {
+            ComPtr<IDXGIOutput> output;
+            if (adapter->EnumOutputs(o, output.GetAddressOf()) ==
+                DXGI_ERROR_NOT_FOUND) {
+                break;
+            }
+            DXGI_OUTPUT_DESC od{};
+            output->GetDesc(&od);
+            const auto& rc = od.DesktopCoordinates;
+            std::printf("  output %u: %ls attached=%d %ldx%ld @(%ld,%ld) %dHz\n",
+                        o, od.DeviceName, od.AttachedToDesktop ? 1 : 0,
+                        rc.right - rc.left, rc.bottom - rc.top, rc.left, rc.top,
+                        DisplayRefreshHz(od.DeviceName));
+            // Mode list via DXGI, not GDI: EnumDisplayDevices returns FALSE in
+            // the sandboxed automation session this tool is verified from,
+            // while the DXGI path demonstrably works there (2026-08-07).
+            UINT mode_count = 0;
+            output->GetDisplayModeList(DXGI_FORMAT_B8G8R8A8_UNORM, 0,
+                                       &mode_count, nullptr);
+            std::vector<DXGI_MODE_DESC> modes(mode_count);
+            if (mode_count &&
+                SUCCEEDED(output->GetDisplayModeList(DXGI_FORMAT_B8G8R8A8_UNORM,
+                                                     0, &mode_count,
+                                                     modes.data()))) {
+                std::vector<std::string> high;  // distinct, >=100Hz
+                for (const auto& m : modes) {
+                    const int hz =
+                        m.RefreshRate.Denominator == 0
+                            ? 0
+                            : static_cast<int>((m.RefreshRate.Numerator +
+                                                m.RefreshRate.Denominator / 2) /
+                                               m.RefreshRate.Denominator);
+                    if (m.Width == 2048 && m.Height == 1536 && hz == 120) {
+                        target_found = true;
+                    }
+                    if (hz < 100) continue;
+                    char buf[64];
+                    std::snprintf(buf, sizeof(buf), "%ux%u@%d", m.Width,
+                                  m.Height, hz);
+                    if (std::find(high.begin(), high.end(), std::string(buf)) ==
+                        high.end()) {
+                        high.emplace_back(buf);
+                    }
+                }
+                std::printf("    modes: %u total; >=100Hz:", mode_count);
+                if (high.empty()) {
+                    std::printf(" (none)");
+                }
+                for (const auto& s : high) std::printf(" %s", s.c_str());
+                std::printf("\n");
+            }
+        }
+    }
+    std::printf(
+        "note: --display N indexes outputs on the default D3D11 adapter "
+        "(usually adapter 0)\n");
+    std::printf("TARGET MODE 2048x1536@120: %s\n",
+                target_found ? "FOUND" : "NOT FOUND");
+    return 0;
+}
+
 // QPC -> 100ns units without 64-bit overflow (qpc * 1e7 can exceed int64).
 long long QpcTo100ns(long long qpc, long long freq) {
     const long long whole = qpc / freq;
@@ -215,6 +297,7 @@ struct Options {
     // "usb" | "usb:PORT" = usbmux direct to the iPad's listen port (7789).
     // "tcp:HOST:PORT"    = plain TCP (mock receiver / wired-LAN fallback).
     std::string send_target;
+    bool list_displays = false;
 };
 
 Options ParseArgs(int argc, char** argv) {
@@ -237,6 +320,8 @@ Options ParseArgs(int argc, char** argv) {
             opt.output_path = need_value("--output");
         } else if (std::strcmp(argv[i], "--send") == 0) {
             opt.send_target = need_value("--send");
+        } else if (std::strcmp(argv[i], "--list-displays") == 0) {
+            opt.list_displays = true;
         } else {
             std::fprintf(stderr, "[fatal] unknown arg: %s\n", argv[i]);
             std::exit(1);
@@ -250,6 +335,7 @@ Options ParseArgs(int argc, char** argv) {
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     const Options opt = ParseArgs(argc, argv);
+    if (opt.list_displays) return ListDisplays();
 
     // 1ms sleep granularity for the drain thread's poll loop; without this a
     // 500us sleep can stretch to 15.6ms and pollute the latency measurement.
