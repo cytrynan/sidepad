@@ -42,6 +42,8 @@ final class USBTransportClient: TransportClient, @unchecked Sendable {
     var onSnapshot: ((LinkSnapshot) -> Void)?
     /// 画面に出す動作ログ（実機はコンソールが見えないので UI に出す）。
     var onLog: ((String) -> Void)?
+    /// PC との接続が切れた時の理由通知（待ち受け画面の「直近の切断理由」表示用）。
+    var onDisconnect: ((String) -> Void)?
 
     init(port: UInt16 = USBTransportClient.defaultPort) {
         self.port = NWEndpoint.Port(rawValue: port) ?? 7789
@@ -111,10 +113,12 @@ final class USBTransportClient: TransportClient, @unchecked Sendable {
                 log("PC 接続確立")
                 self.state = .connecting
             case .failed(let error):
+                // 入れ替え済み接続の .failed でも必ずログを残す（dropConnection 内の
+                // === ガードで弾かれると無音になり、画面ログが唯一の診断経路の実機で困る）
                 log("接続エラー: \(error)")
-                dropConnection(conn)
+                dropConnection(conn, reason: "接続エラー: \(error)")
             case .cancelled:
-                dropConnection(conn)
+                dropConnection(conn, reason: "接続キャンセル")
             default:
                 break
             }
@@ -123,12 +127,14 @@ final class USBTransportClient: TransportClient, @unchecked Sendable {
         receiveLoop(conn)
     }
 
-    private func dropConnection(_ conn: NWConnection) {
+    private func dropConnection(_ conn: NWConnection, reason: String) {
         guard connection === conn else { return }
+        conn.cancel()  // 参照を外すだけだと未解放の NWConnection が抜き差しの回数だけ積み上がる
         connection = nil
         buffer.removeAll(keepingCapacity: true)
+        onDisconnect?(reason)
         state = .connecting  // listener は生きているので次の接続を待てる
-        log("切断。次の接続を待機")
+        log("切断（\(reason)）。次の接続を待機")
     }
 
     private func receiveLoop(_ conn: NWConnection) {
@@ -141,7 +147,13 @@ final class USBTransportClient: TransportClient, @unchecked Sendable {
                 handle(data, recvNs: recvNs, on: conn)
             }
             if isComplete || error != nil {
-                dropConnection(conn)
+                if let error {
+                    // NWError は localizedDescription だと "(NWError error 0.)" 等に化けて
+                    // 原因(posix(ECONNRESET)等)が消える。文字列補間で debugDescription を使う
+                    dropConnection(conn, reason: "受信エラー: \(error)")
+                } else {
+                    dropConnection(conn, reason: "PC側からストリーム終了")
+                }
                 return
             }
             receiveLoop(conn)

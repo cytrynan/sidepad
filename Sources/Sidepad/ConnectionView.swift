@@ -4,7 +4,11 @@
 // USBTransportClient を起動して PC からの接続を待ち受け、受信フレームを
 // VideoPipeline（デコード）→ LatestFrameStore → MetalFrameRenderer（描画）に流す。
 // 実機ではコンソールが見えないので、動作ログもこの画面に出す。
-// 統計オーバーレイは画面タップで表示/非表示を切り替える。
+// 統計オーバーレイは3本指タップで表示/非表示を切り替える（受信中の既定はOFF）。
+// 切断後は直前セッションの最終統計をトグルに関係なく固定表示する（受入検証で数値を読むため。
+// 20260807-stats-overlay-freeze のK指摘対応を既定OFF化後も維持する）。
+// 未接続時は待ち受け画面（接続案内＋直近の切断理由）を出し、
+// listener 常駐により PC の再接続で自動的に表示へ戻る。
 // 切断後も直前セッションの最終統計を固定表示する（受入検証で数値を読むため）。
 // 切断時に VideoPipeline.flushStats() で最終値まで発行してから凍結し、
 // 次接続の RESET でゼロが発行されて固定表示は消える。
@@ -19,6 +23,8 @@ final class LinkViewModel: ObservableObject {
     @Published private(set) var snapshot = LinkSnapshot()
     @Published private(set) var pipelineStats = PipelineStats()
     @Published private(set) var logs: [String] = []
+    /// 直近の切断理由（時刻付き）。一度も切断していなければ nil。
+    @Published private(set) var lastDisconnectReason: String?
 
     private let transport = USBTransportClient()
     private let pipeline = VideoPipeline()
@@ -53,6 +59,12 @@ final class LinkViewModel: ObservableObject {
         transport.onLog = { [weak self] message in
             Task { @MainActor in self?.append(message) }
         }
+        transport.onDisconnect = { [weak self] reason in
+            let at = Date()  // 時刻の確定だけ transport キュー側で行い、整形は MainActor 内で
+            Task { @MainActor in
+                self?.lastDisconnectReason = "\(Self.timeFormatter.string(from: at)) \(reason)"
+            }
+        }
         transport.onFrameData = { [pipeline] data in
             pipeline.ingest(data)
         }
@@ -73,11 +85,21 @@ final class LinkViewModel: ObservableObject {
         logs.append(message)
         if logs.count > 12 { logs.removeFirst(logs.count - 12) }
     }
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        // locale 固定必須: 未指定だと端末の12/24時間設定で HH が再解釈され（QA1480）、
+        // PC側 daemon ログとの時刻突き合わせ（受入の10秒計測）が壊れる
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
 }
 
 struct ConnectionView: View {
     @StateObject private var model = LinkViewModel()
-    @State private var showOverlay = true
+    /// 統計オーバーレイの表示状態。既定OFF（3本指タップでトグル）。
+    @State private var showOverlay = false
 
     var body: some View {
         ZStack {
@@ -90,15 +112,20 @@ struct ConnectionView: View {
 
             if model.state != .receiving {
                 waitingView
-                if hasSessionStats, showOverlay {
+                // 最終統計はトグルに関係なく自動表示（受入で数値を読むため）。
+                // 統計が無くても、トグルONならゼロ値オーバーレイを出して
+                // 「3本指タップが効いている」ことを目視確認できるようにする
+                if hasSessionStats || showOverlay {
                     statsOverlay
                 }
             } else if showOverlay {
                 statsOverlay
             }
+
+            // 3本指タップの捕捉層（最前面・透明）。他に操作可能なUIは無いので全面でよい
+            ThreeFingerTapCatcher { showOverlay.toggle() }
+                .ignoresSafeArea()
         }
-        .contentShape(Rectangle())
-        .onTapGesture { showOverlay.toggle() }
         .statusBarHidden()
         .onAppear { model.start() }
     }
@@ -121,6 +148,17 @@ struct ConnectionView: View {
                 .font(.headline)
                 .foregroundStyle(.secondary)
 
+            // .secondary はライトモード端末では黒系に解決され黒背景で読めなくなるため明示指定
+            Text("USBケーブルでPCに接続してください")
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.75))
+
+            if let reason = model.lastDisconnectReason {
+                Text("直近の切断: \(reason)")
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(.orange)
+            }
+
             logsView
         }
         .padding()
@@ -135,7 +173,7 @@ struct ConnectionView: View {
 
     private var statsOverlay: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if model.state != .receiving {
+            if model.state != .receiving, hasSessionStats {
                 Text("最終統計（切断済み）")
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.orange)
@@ -206,6 +244,35 @@ struct ConnectionView: View {
         case .receiving:
             return "display"
         }
+    }
+}
+
+/// 3本指タップを捕捉する透明レイヤ。
+/// SwiftUI の TapGesture は指の本数を指定できないため、
+/// UIKit の UITapGestureRecognizer(numberOfTouchesRequired: 3) をラップする。
+private struct ThreeFingerTapCatcher: UIViewRepresentable {
+    let action: () -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        let tap = UITapGestureRecognizer(
+            target: context.coordinator, action: #selector(Coordinator.fired))
+        tap.numberOfTouchesRequired = 3
+        view.addGestureRecognizer(tap)
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.action = action
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
+
+    final class Coordinator: NSObject {
+        var action: () -> Void
+        init(action: @escaping () -> Void) { self.action = action }
+        @objc func fired() { action() }
     }
 }
 
