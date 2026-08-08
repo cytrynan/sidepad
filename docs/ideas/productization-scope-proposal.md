@@ -1,6 +1,9 @@
 ---
 type: proposal
-status: draft（K未承認・相談用）
+status: approved
+verified:
+  by: human:K
+  at: 2026-08-08
 generated:
   by: kuroko/claude-fable-5
   at: 2026-08-08
