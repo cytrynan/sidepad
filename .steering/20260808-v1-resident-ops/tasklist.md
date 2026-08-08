@@ -19,19 +19,19 @@ tracking: #1
     - [x] ローカル分（2026-08-08）: 旧バイナリとの同条件比較で出力構造一致・警告増加なし／モック受信でtransport4項目PASS・PCダンプと受信再構成の fc /b バイト一致（1169フレーム/14MB）／レビュー(Opus)必須2件（Stop順序の+250msフレーム計上・再Start時の統計残留)修正済み
     - [x] 実機E2E分（2026-08-08）: 仮想DP@120＋novsyncソースで**受入11項目全PASS・exit=0**（2401/2401・欠落0・latency p99 5.77ms・37.8Mbps。リファクタ前=2391/2391・p99 6.3msと同水準）。注: vsyncソースでの1走目はbitrate1項FAIL=既知の混在リフレッシュ60律速（dev/screen-capture-windows.md §7）
 
-- [~] フェーズ2: sidepadd 常駐本体 (#3)
-  - [~] `usbmux_events`: usbmux Listen で Attached/Detached 受信（ConnectionType=USB 選別）
-  - [ ] `vdd_control`: devcon による仮想DP有効/無効（インスタンスID自動特定）
-  - [ ] `daemon_main`: 状態機械（IDLE→VDD_ON→WAIT_DISPLAY→STREAMING→TEARDOWN、バックオフ、全遷移ログ）
-  - [ ] WAIT_DISPLAY の表示番号自動特定（--list-displays 判定ロジック流用・5sタイムアウト）
-  - [ ] 60秒周期スタッツCSVログ（fps・p99・working set）
-  - [ ] `install-task.ps1`: タスクスケジューラ登録/解除/状態確認（ログオン時・最上位特権）
+- [x] フェーズ2: sidepadd 常駐本体 (#3) ※フェーズ3と合同レビュー（Opus・必須10件）済み・全件修正・回帰確認済み
+  - [x] `usbmux_events`: usbmux Listen で Attached/Detached 受信（ConnectionType=USB 選別）
+  - [x] `vdd_control`: devcon による仮想DP有効/無効（インスタンスID自動特定）
+  - [x] `daemon_main`: 状態機械（IDLE→VDD_ON→WAIT_DISPLAY→STREAMING→TEARDOWN、バックオフ、全遷移ログ）
+  - [x] WAIT_DISPLAY の表示番号自動特定（--list-displays 判定ロジック流用・5sタイムアウト）
+  - [x] 60秒周期スタッツCSVログ（fps・p99・working set。--stats-seconds でテスト用短縮可）
+  - [x] `install-task.ps1`: タスクスケジューラ登録/解除/状態確認（スクリプト整備・-Status動作確認。実登録はフェーズ5の受入で実施）
 
-- [ ] フェーズ3: 耐障害 (#4)
-  - [ ] スリープ/復帰対応（メッセージ専用ウィンドウ＋RegisterSuspendResumeNotification）
-  - [ ] 送信エラー・エンコーダ失敗からの自動復帰（バックオフ付き再初期化）
-  - [ ] `verify-replug.ps1`: 抜き差し試験の判定スクリプト（到達時間・成否集計）
-  - [ ] `verify-soak.ps1`: ソーク判定スクリプト（fps前半/後半差・メモリ傾き）
+- [x] フェーズ3: 耐障害 (#4) ※レビュー必須10件修正済み（VDD消灯のRAII化・偽attachログ排除・lost wakeup対策・無限成長バッファ遮断・シングルトン化・判定スクリプト強化ほか）。修正後に故障注入を再走行し復帰確認済み
+  - [x] スリープ/復帰対応（PowerRegisterSuspendResumeNotification コールバック方式。実スリープでの検証はフェーズ5）
+  - [x] 送信エラー・エンコーダ失敗からの自動復帰（**故障注入で検証済み 2026-08-08**: 仮想DPモード変更→ACCESS_LOST→バックオフ1s/2s/4s→モード復元で自動streaming復帰）
+  - [x] `verify-replug.ps1`: 抜き差し試験の判定スクリプト（実ログ5サイクル解析OK・不足時FAIL動作確認）
+  - [x] `verify-soak.ps1`: ソーク判定スクリプト（合成データで横ばいPASS・劣化FAILの両方向確認）
 
 - [ ] フェーズ4: iPad側（変更をまとめて1回で再インストール） (#5)
   - [ ] 待ち受け画面（未接続表示・直近切断理由）＋自動再接続の確認

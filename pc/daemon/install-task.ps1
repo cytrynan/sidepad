@@ -46,6 +46,11 @@ if (-not (Test-Path $exe)) {
     exit 1
 }
 
+# 二重起動防止: 手動テスト起動や前回タスク分が残っていると2プロセスが
+# VDDトグルを取り合う（本体側にも Local\sidepadd-singleton mutex あり）
+$running = Get-Process -Name sidepadd -ErrorAction SilentlyContinue
+if ($running) { $running | Stop-Process -Force -Confirm:$false; Start-Sleep 1 }
+
 $action = New-ScheduledTaskAction -Execute $exe
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 # 電源接続に関係なく動かす・時間制限なし（常駐のため）

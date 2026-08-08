@@ -93,6 +93,12 @@ public:
     StreamSender& sender() { return sender_; }
     bool sending() const { return sender_.connected(); }
 
+    // Stop collecting the whole-run series (latency_ms_all_ etc.) -- they
+    // exist for the CLI's post-run summary and grow ~25MB/hour at 120fps.
+    // The daemon calls this before Start(); the running window and the
+    // atomic counters keep working. Irreversible for this instance.
+    void DisableFullSeries() { collect_full_series_ = false; }
+
     // --- Running statistics (safe while streaming) ---
     // Latency samples accumulated since the previous call (drain thread
     // pushes under a mutex; this swaps the window out). For the daemon's
@@ -153,6 +159,7 @@ private:
     // sections; the per-frame cost is one uncontended lock).
     std::mutex window_mutex_;
     std::vector<double> window_lat_;
+    bool collect_full_series_ = true;  // set false before Start (daemon)
 
     // Whole-run series and counters (drain thread during the run, the
     // controlling thread after Stop).

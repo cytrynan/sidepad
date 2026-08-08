@@ -384,15 +384,17 @@ void Pipeline::DrainLoop() {
                 }
             }
             if (lat_ms >= 0) {
-                latency_ms_all_.push_back(lat_ms);
+                if (collect_full_series_) latency_ms_all_.push_back(lat_ms);
                 window_lat_sum += lat_ms;
                 {
                     std::lock_guard<std::mutex> lock(window_mutex_);
                     window_lat_.push_back(lat_ms);
                 }
             }
-            frame_bytes_all_.push_back(static_cast<long long>(f.size));
-            CollectSliceSizes(f.data, f.size, &slice_bytes_all_);
+            if (collect_full_series_) {
+                frame_bytes_all_.push_back(static_cast<long long>(f.size));
+                CollectSliceSizes(f.data, f.size, &slice_bytes_all_);
+            }
             encoded_bytes_ += static_cast<long long>(f.size);
             window_bytes += static_cast<long long>(f.size);
             if (f.idr) ++idr_frames_;

@@ -29,6 +29,7 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
+#include <powrprof.h>  // PowerRegisterSuspendResumeNotification
 #include <psapi.h>
 #include <wrl/client.h>
 
@@ -49,13 +50,16 @@
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "powrprof.lib")
 
 using Clock = std::chrono::steady_clock;
 using Microsoft::WRL::ComPtr;
 
 namespace {
 
-constexpr int kWaitDisplayTimeoutMs = 5'000;
+// 15s, not 5: a disable->enable cycle takes a measured 10-13s before the
+// 2048x1536@120 mode is back (PnP re-enumeration; review finding 10).
+constexpr int kWaitDisplayTimeoutMs = 15'000;
 constexpr int kWaitDisplayPollMs = 100;
 constexpr int kBackoffMaxMs = 10'000;
 // A session that streamed at least this long counts as healthy and resets
@@ -144,12 +148,26 @@ struct DeviceState {
     std::mutex mutex;
     std::condition_variable cv;
     bool attached = false;
+    // Set only on the false->true transition, consumed by the main loop:
+    // session retries with the cable left in must neither re-log
+    // "EVENT attached" nor reset attach_time, or the attach->stream KPI
+    // reads a fake 0.2s instead of the real recovery time (review finding 2).
+    bool pending_attach_log = false;
+    Clock::time_point attach_time{};
     long long device_id = -1;
     std::atomic<bool> quit{false};
+    // Set by the power-notification callback (an OS thread). While true, a
+    // running session tears down and no new session starts; the resume
+    // notification (or the USB re-attach after resume) wakes the main loop.
+    std::atomic<bool> suspended{false};
 
     void OnEvent(const UsbmuxDeviceEvent& ev) {
         std::lock_guard<std::mutex> lock(mutex);
         if (ev.attached && ev.usb) {
+            if (!attached) {
+                attach_time = Clock::now();
+                pending_attach_log = true;
+            }
             attached = true;
             device_id = ev.device_id;
         } else if (!ev.attached && ev.device_id == device_id) {
@@ -167,11 +185,38 @@ struct DeviceState {
 
 DeviceState* g_state = nullptr;  // for the console ctrl handler only
 
+// DEVICE_NOTIFY_CALLBACK: no window needed (sidepadd has no message loop).
+// Runs on a system thread; only flips flags. The flag stores happen under
+// state->mutex even though they are atomics: the main loop's cv.wait
+// predicate reads them, and an unlocked store+notify can slip into the
+// window between predicate evaluation and wait registration -- a lost
+// wakeup that leaves the daemon hung in IDLE (review finding 3).
+ULONG CALLBACK SuspendResumeCallback(PVOID context, ULONG type, PVOID) {
+    auto* state = static_cast<DeviceState*>(context);
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (type == PBT_APMSUSPEND) {
+            state->suspended.store(true);
+        } else if (type == PBT_APMRESUMEAUTOMATIC ||
+                   type == PBT_APMRESUMESUSPEND) {
+            state->suspended.store(false);
+        } else {
+            return 0;
+        }
+    }
+    state->cv.notify_all();
+    return 0;
+}
+
 BOOL WINAPI ConsoleCtrlHandler(DWORD type) {
     if (type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT ||
         type == CTRL_CLOSE_EVENT) {
         if (g_state) {
-            g_state->quit.store(true);
+            {
+                // Same lost-wakeup guard as SuspendResumeCallback.
+                std::lock_guard<std::mutex> lock(g_state->mutex);
+                g_state->quit.store(true);
+            }
             g_state->cv.notify_all();
         }
         return TRUE;
@@ -198,18 +243,54 @@ struct Options {
     long long bitrate_bps = 40'000'000;
 };
 
+// RAII: the virtual display goes dark on EVERY session exit path -- the
+// early failure returns used to leave the ghost monitor on the desktop
+// (review finding 1). The functional display check is the primary verdict;
+// devcon's own output is advisory (its exit code lies, and "No matching
+// devices" can simply mean already-gone).
+class VddSession {
+public:
+    VddSession(VddControl& vdd, Logger& log) : vdd_(vdd), log_(log) {
+        std::string detail;
+        if (!vdd_.Enable(&detail)) {
+            log_.Line("WARN vdd enable failed (%s) -- continuing, display "
+                      "may already be up", detail.c_str());
+        } else {
+            log_.Line("STATE vdd_on (%s)", detail.c_str());
+        }
+    }
+    ~VddSession() {
+        std::string detail;
+        vdd_.Disable(&detail);
+        bool display_gone = false;
+        for (int waited = 0; waited <= 2'000; waited += 200) {
+            if (FindVirtualDisplayOutput() < 0) {
+                display_gone = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+        if (display_gone) {
+            log_.Line("STATE vdd_off (display detached; %s)", detail.c_str());
+        } else {
+            log_.Line("WARN vdd_off incomplete: display STILL ATTACHED -- "
+                      "needs elevation? (%s)", detail.c_str());
+        }
+    }
+    VddSession(const VddSession&) = delete;
+    VddSession& operator=(const VddSession&) = delete;
+
+private:
+    VddControl& vdd_;
+    Logger& log_;
+};
+
 // One attach->stream->teardown cycle. Returns true when the session reached
 // STREAMING and ended normally (detach / --session-seconds), false on any
 // failure before or during streaming (caller backs off and retries).
 bool RunSession(const Options& opt, DeviceState& state, VddControl& vdd,
                 Logger& log, FILE* csv, Clock::time_point attach_time) {
-    std::string detail;
-    if (!vdd.Enable(&detail)) {
-        log.Line("WARN vdd enable failed (%s) -- continuing, display may "
-                 "already be up", detail.c_str());
-    } else {
-        log.Line("STATE vdd_on (%s)", detail.c_str());
-    }
+    VddSession vdd_session(vdd, log);
 
     int display = -1;
     for (int waited = 0; waited <= kWaitDisplayTimeoutMs;
@@ -240,6 +321,9 @@ bool RunSession(const Options& opt, DeviceState& state, VddControl& vdd,
         log.Line("FAIL init_outputs: %s", err.c_str());  // app not open yet etc.
         return false;
     }
+    // The CLI-only full series (latency/frame/slice vectors) would grow
+    // ~25MB/hour at 120fps in a daemon that never reads them (finding 4).
+    pipeline.DisableFullSeries();
 
     pipeline.Start();
     const auto stream_start = Clock::now();
@@ -263,6 +347,11 @@ bool RunSession(const Options& opt, DeviceState& state, VddControl& vdd,
             ended_normally = true;
             break;
         }
+        if (state.suspended.load()) {
+            log.Line("EVENT suspend: tearing down before sleep");
+            ended_normally = true;
+            break;
+        }
         if (!state.IsAttached()) {
             log.Line("EVENT detached (usbmux)");
             ended_normally = true;
@@ -274,23 +363,28 @@ bool RunSession(const Options& opt, DeviceState& state, VddControl& vdd,
             ended_normally = true;
             break;
         }
-        if (now >= next_stats && csv) {
+        if (now >= next_stats) {
+            // Drain the latency window even when the CSV is unavailable, or
+            // it grows ~7MB/hour unread (review finding 5).
+            const double p99 =
+                PercentileOf(pipeline.TakeLatencyWindow(), 0.99);
             const long long frames = pipeline.encoded_frames();
             const double dt =
                 std::chrono::duration<double>(now - last_stats_time).count();
             const double fps = (frames - last_frames) / (dt > 0 ? dt : 1);
-            const double p99 =
-                PercentileOf(pipeline.TakeLatencyWindow(), 0.99);
-            SYSTEMTIME st;
-            GetLocalTime(&st);
-            std::fprintf(csv,
-                         "%04u-%02u-%02uT%02u:%02u:%02u,%.2f,%lld,%.2f,%.1f,"
-                         "%lld,%lld\n",
-                         st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
-                         st.wSecond, fps, frames, p99, WorkingSetMb(),
-                         pipeline.encoder().input_full_drops(),
-                         pipeline.encoder().pool_starved_drops());
-            std::fflush(csv);
+            if (csv) {
+                SYSTEMTIME st;
+                GetLocalTime(&st);
+                std::fprintf(csv,
+                             "%04u-%02u-%02uT%02u:%02u:%02u,%.2f,%lld,%.2f,"
+                             "%.1f,%lld,%lld\n",
+                             st.wYear, st.wMonth, st.wDay, st.wHour,
+                             st.wMinute, st.wSecond, fps, frames, p99,
+                             WorkingSetMb(),
+                             pipeline.encoder().input_full_drops(),
+                             pipeline.encoder().pool_starved_drops());
+                std::fflush(csv);
+            }
             last_frames = frames;
             last_stats_time = now;
             next_stats = now + stats_period;
@@ -312,11 +406,8 @@ bool RunSession(const Options& opt, DeviceState& state, VddControl& vdd,
                  pipeline.sent_frames());
     }
 
-    if (!vdd.Disable(&detail)) {
-        log.Line("WARN vdd disable failed (%s)", detail.c_str());
-    } else {
-        log.Line("STATE vdd_off (%s)", detail.c_str());
-    }
+    // The VDD turn-off (with its functional display check) happens in
+    // ~VddSession on every exit path of this function.
 
     // A session that died instantly (e.g. encoder loss loop) must not count
     // as healthy even if it ended via detach bookkeeping.
@@ -353,6 +444,15 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Single-instance guard: two sidepadds fight over the VDD toggle and
+    // interleave the same log/CSV (review finding 9). Handle leaks until
+    // process exit by design.
+    CreateMutexA(nullptr, TRUE, "Local\\sidepadd-singleton");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        std::fprintf(stderr, "[fatal] sidepadd is already running\n");
+        return 1;
+    }
+
     const std::string dir = LocalAppDataDir();
     CreateDirectoryA(dir.c_str(), nullptr);
     Logger log;
@@ -364,6 +464,12 @@ int main(int argc, char** argv) {
     const bool csv_new =
         GetFileAttributesA(csv_path.c_str()) == INVALID_FILE_ATTRIBUTES;
     FILE* csv = std::fopen(csv_path.c_str(), "ab");
+    if (!csv) {
+        // Not fatal, but the soak evidence silently disappearing is
+        // (review finding 5): make it loud.
+        log.Line("WARN stats.csv open failed (%s) -- no soak evidence",
+                 csv_path.c_str());
+    }
     if (csv && csv_new) {
         std::fprintf(csv,
                      "time,fps,frames_total,lat_p99_ms,working_set_mb,"
@@ -375,6 +481,16 @@ int main(int argc, char** argv) {
     g_state = &state;
     SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
 
+    DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS power_params{};
+    power_params.Callback = SuspendResumeCallback;
+    power_params.Context = &state;
+    HPOWERNOTIFY power_notify = nullptr;
+    if (PowerRegisterSuspendResumeNotification(DEVICE_NOTIFY_CALLBACK,
+                                               &power_params,
+                                               &power_notify) != ERROR_SUCCESS) {
+        power_notify = nullptr;  // degraded: sleep looks like a USB detach
+    }
+
     VddControl vdd(VddControl::FindDevcon());
     log.Line("sidepadd start (devcon: %s)",
              vdd.available() ? "found" : "NOT FOUND -- vdd toggle disabled");
@@ -384,6 +500,9 @@ int main(int argc, char** argv) {
     if (!listener.Start([&](const UsbmuxDeviceEvent& ev) { state.OnEvent(ev); },
                         &err)) {
         log.Line("FATAL usbmux listener: %s", err.c_str());
+        // Unregister before `state` goes out of scope, or the power
+        // callback can fire into a destroyed object (review, optional 2).
+        if (power_notify) PowerUnregisterSuspendResumeNotification(power_notify);
         return 1;
     }
     log.Line("STATE idle: waiting for iPad over USB (usbmux Listen)");
@@ -394,11 +513,19 @@ int main(int argc, char** argv) {
         Clock::time_point attach_time;
         {
             std::unique_lock<std::mutex> lock(state.mutex);
-            state.cv.wait(lock,
-                          [&] { return state.attached || state.quit.load(); });
+            state.cv.wait(lock, [&] {
+                return (state.attached && !state.suspended.load()) ||
+                       state.quit.load();
+            });
             if (state.quit.load()) break;
-            attach_time = Clock::now();
-            log.Line("EVENT attached: DeviceID=%lld (USB)", state.device_id);
+            // Physical attach moment, not "this retry's start" -- the
+            // attach->stream KPI must include failed attempts (finding 2).
+            attach_time = state.attach_time;
+            if (state.pending_attach_log) {
+                state.pending_attach_log = false;
+                log.Line("EVENT attached: DeviceID=%lld (USB)",
+                         state.device_id);
+            }
         }
 
         const bool healthy = RunSession(opt, state, vdd, log, csv, attach_time);
@@ -419,6 +546,7 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (power_notify) PowerUnregisterSuspendResumeNotification(power_notify);
     listener.Stop();
     if (csv) std::fclose(csv);
     log.Line("sidepadd exit");

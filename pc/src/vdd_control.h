@@ -28,14 +28,21 @@ public:
 
     bool available() const { return !devcon_path_.empty(); }
 
-    // devcon enable/disable "Root\MttVDD". Returns true on exit code 0 or 1
-    // (1 = done with reboot flag; the display still toggles). *detail gets a
-    // one-line description for the log either way.
-    bool Enable(std::string* detail) { return RunDevcon("enable", detail); }
-    bool Disable(std::string* detail) { return RunDevcon("disable", detail); }
+    // devcon enable/disable "Root\MttVDD". Success is judged from devcon's
+    // OUTPUT, not its exit code: devcon exits 0 even when it prints
+    // "Disable failed" (measured 2026-08-08, unelevated). The per-device
+    // result line (": Enabled" / ": Disabled") is the only trustworthy
+    // signal. *detail gets the relevant output line for the log.
+    bool Enable(std::string* detail) {
+        return RunDevcon("enable", ": Enabled", detail);
+    }
+    bool Disable(std::string* detail) {
+        return RunDevcon("disable", ": Disabled", detail);
+    }
 
 private:
-    bool RunDevcon(const char* verb, std::string* detail);
+    bool RunDevcon(const char* verb, const char* success_marker,
+                   std::string* detail);
 
     std::string devcon_path_;
 };
