@@ -2,8 +2,10 @@
 # 使い方: pwsh -File install-to-ipad.ps1
 # 前提: iPadがUSB接続済み・usbipdでbind済み(Shared)・WSL Ubuntu-24.04にxtool/pymobiledevice3環境構築済み
 # 背景(なぜ横取り方式か): usbip経由のバルクOUT転送は大チャンクで死ぬため、xtool devの転送は
-# 必ずConnectingでハングする。署名済みipaだけxtoolに作らせ、転送はchunked_install.py(4KB刻み)で行う。
-# 詳細: ~/.claude/dev/ios-dev-without-mac.md 追記4
+# 必ずConnectingでハングする。署名済みipaだけxtoolに作らせ、転送はchunked_install.py(4KB刻み・
+# 256KBごとにAFCセッション張り直し)で行う。詳細: ~/.claude/dev/ios-dev-without-mac.md 追記4・12
+# 運用: 実機に入れるビルドを変えるたびに App-Info.plist の CFBundleVersion を上げること
+# (インストール受入を ideviceinstaller -l のバージョン番号で機械判定できる)
 
 $ErrorActionPreference = "Stop"
 $usbipd = "C:\Program Files\usbipd-win\usbipd.exe"

@@ -1,2 +1,3 @@
 version: 1
 bundleID: com.sidepad.app
+infoPath: App-Info.plist

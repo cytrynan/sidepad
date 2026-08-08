@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- xtool.yml の infoPath から参照される追加 Info.plist。
+     xtool のデフォルト辞書にキー単位で上書きマージされる（xtool Planner.swift）。
+     CFBundleVersion はインストール受入の機械判定に使うため、実機に入れるビルドを
+     変えるたびに必ずインクリメントすること。 -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleVersion</key>
+	<string>2</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.1.0</string>
+</dict>
+</plist>
