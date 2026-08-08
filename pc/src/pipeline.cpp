@@ -264,6 +264,10 @@ void Pipeline::Start() {
     latency_ms_all_.clear();
     frame_bytes_all_.clear();
     slice_bytes_all_.clear();
+    {
+        std::lock_guard<std::mutex> lock(window_mutex_);
+        window_lat_.clear();
+    }
     encoded_frames_.store(0, std::memory_order_relaxed);
     encoded_bytes_ = 0;
     idr_frames_ = 0;
@@ -294,6 +298,13 @@ void Pipeline::Stop() {
         dump_ = nullptr;
     }
     started_ = false;
+}
+
+std::vector<double> Pipeline::TakeLatencyWindow() {
+    std::vector<double> out;
+    std::lock_guard<std::mutex> lock(window_mutex_);
+    out.swap(window_lat_);
+    return out;
 }
 
 void Pipeline::CaptureLoop() {
@@ -375,6 +386,10 @@ void Pipeline::DrainLoop() {
             if (lat_ms >= 0) {
                 latency_ms_all_.push_back(lat_ms);
                 window_lat_sum += lat_ms;
+                {
+                    std::lock_guard<std::mutex> lock(window_mutex_);
+                    window_lat_.push_back(lat_ms);
+                }
             }
             frame_bytes_all_.push_back(static_cast<long long>(f.size));
             CollectSliceSizes(f.data, f.size, &slice_bytes_all_);

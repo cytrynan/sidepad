@@ -26,10 +26,19 @@ target_include_directories(pc_encode_spike PRIVATE third_party/AMF/include)
 # winmm: timeBeginPeriod / ws2_32: StreamSender (usbmux + TCP transport)
 target_link_libraries(pc_encode_spike PRIVATE winmm ws2_32)
 
+# sidepadd: the resident daemon (usbmux attach detection -> VDD toggle ->
+# Pipeline streaming). Same pipeline objects as the spike on purpose --
+# the spike stays the acceptance harness for the shared code.
+add_executable(sidepadd src/daemon_main.cpp src/pipeline.cpp
+                        src/amf_encoder.cpp src/stream_sender.cpp
+                        src/usbmux_events.cpp src/vdd_control.cpp)
+target_include_directories(sidepadd PRIVATE third_party/AMF/include)
+target_link_libraries(sidepadd PRIVATE winmm ws2_32)
+
 # d3d11.lib / dxgi.lib are pulled in via #pragma comment(lib, ...) in the
 # sources, but listing them here too is harmless and makes the dependency
 # visible without opening the source file.
-foreach(target pc_capture_spike pc_test_source pc_encode_spike)
+foreach(target pc_capture_spike pc_test_source pc_encode_spike sidepadd)
   target_link_libraries(${target} PRIVATE d3d11 dxgi)
 
   # Desktop Duplication needs Windows 8+ headers (DXGI 1.2 / IDXGIOutput1).

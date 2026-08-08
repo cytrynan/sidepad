@@ -93,6 +93,12 @@ public:
     StreamSender& sender() { return sender_; }
     bool sending() const { return sender_.connected(); }
 
+    // --- Running statistics (safe while streaming) ---
+    // Latency samples accumulated since the previous call (drain thread
+    // pushes under a mutex; this swaps the window out). For the daemon's
+    // periodic CSV; encoded_frames() below is atomic and equally safe.
+    std::vector<double> TakeLatencyWindow();
+
     // --- Post-Stop statistics (see threading contract) ---
     // Empty string = no fatal error. Formatted exactly like the spike's
     // stderr lines (including the "[fatal] ..." prefix) so the CLI can
@@ -142,6 +148,11 @@ private:
     std::mutex inflight_mutex_;
     std::unordered_map<long long, long long> inflight_submit_qpc_;
     long long qpc_freq_ = 1;
+
+    // Latency window for TakeLatencyWindow (mutex-guarded, tiny critical
+    // sections; the per-frame cost is one uncontended lock).
+    std::mutex window_mutex_;
+    std::vector<double> window_lat_;
 
     // Whole-run series and counters (drain thread during the run, the
     // controlling thread after Stop).
