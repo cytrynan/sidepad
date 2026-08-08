@@ -1,6 +1,6 @@
 # タスクリスト（v1: 常駐運用）
 
-<!-- tracking: gh 未認証のため issue 起票は保留（`gh auth login` がK作業。認証後に tasklist-to-issues で起票） -->
+tracking: #1
 
 ## 🚨 タスク完全完了の原則
 
@@ -10,48 +10,44 @@
 
 ---
 
-## フェーズ1: Pipeline抽出（挙動保存）
+## タスク（フェーズ単位で起票・サブタスクは本ファイルで管理）
 
-- [ ] encode_main.cpp からキャプチャ→エンコード→送信ループを `pipeline.{h,cpp}` に抽出（start/stop/統計取得API）
-- [ ] `pc_encode_spike` CLI を Pipeline の薄いラッパに縮小（引数・出力形式は不変）
-- [ ] 挙動保存の検証: 既存受入スクリプト（20260806 USB転送・20260807 E2E）を再走行し全項目PASS
+- [ ] フェーズ1: Pipeline抽出（挙動保存） (#2)
+  - [ ] encode_main.cpp からキャプチャ→エンコード→送信ループを `pipeline.{h,cpp}` に抽出（start/stop/統計取得API）
+  - [ ] `pc_encode_spike` CLI を Pipeline の薄いラッパに縮小（引数・出力形式は不変）
+  - [ ] 挙動保存の検証: 既存受入スクリプト（20260806 USB転送・20260807 E2E）を再走行し全項目PASS
 
-## フェーズ2: sidepadd 常駐本体
+- [ ] フェーズ2: sidepadd 常駐本体 (#3)
+  - [ ] `usbmux_events`: usbmux Listen で Attached/Detached 受信（ConnectionType=USB 選別）
+  - [ ] `vdd_control`: devcon による仮想DP有効/無効（インスタンスID自動特定）
+  - [ ] `daemon_main`: 状態機械（IDLE→VDD_ON→WAIT_DISPLAY→STREAMING→TEARDOWN、バックオフ、全遷移ログ）
+  - [ ] WAIT_DISPLAY の表示番号自動特定（--list-displays 判定ロジック流用・5sタイムアウト）
+  - [ ] 60秒周期スタッツCSVログ（fps・p99・working set）
+  - [ ] `install-task.ps1`: タスクスケジューラ登録/解除/状態確認（ログオン時・最上位特権）
 
-- [ ] `usbmux_events`: usbmux Listen で Attached/Detached 受信（ConnectionType=USB 選別）
-- [ ] `vdd_control`: devcon による仮想DP有効/無効（インスタンスID自動特定）
-- [ ] `daemon_main`: 状態機械（IDLE→VDD_ON→WAIT_DISPLAY→STREAMING→TEARDOWN、バックオフ、全遷移ログ）
-- [ ] WAIT_DISPLAY の表示番号自動特定（--list-displays 判定ロジック流用・5sタイムアウト）
-- [ ] 60秒周期スタッツCSVログ（fps・p99・working set）
-- [ ] `install-task.ps1`: タスクスケジューラ登録/解除/状態確認（ログオン時・最上位特権）
+- [ ] フェーズ3: 耐障害 (#4)
+  - [ ] スリープ/復帰対応（メッセージ専用ウィンドウ＋RegisterSuspendResumeNotification）
+  - [ ] 送信エラー・エンコーダ失敗からの自動復帰（バックオフ付き再初期化）
+  - [ ] `verify-replug.ps1`: 抜き差し試験の判定スクリプト（到達時間・成否集計）
+  - [ ] `verify-soak.ps1`: ソーク判定スクリプト（fps前半/後半差・メモリ傾き）
 
-## フェーズ3: 耐障害
+- [ ] フェーズ4: iPad側（変更をまとめて1回で再インストール） (#5)
+  - [ ] 待ち受け画面（未接続表示・直近切断理由）＋自動再接続の確認
+  - [ ] 3本指タップで統計オーバーレイのトグル（既定OFF）
+  - [ ] ビルド＋実機インストール（install-to-ipad.ps1。usbipd bind 切替＝K作業）
 
-- [ ] スリープ/復帰対応（メッセージ専用ウィンドウ＋RegisterSuspendResumeNotification）
-- [ ] 送信エラー・エンコーダ失敗からの自動復帰（バックオフ付き再初期化）
-- [ ] `verify-replug.ps1`: 抜き差し試験の判定スクリプト（到達時間・成否集計）
-- [ ] `verify-soak.ps1`: ソーク判定スクリプト（fps前半/後半差・メモリ傾き）
+- [ ] フェーズ5: 受入検証（K協力: ケーブル操作・スリープ操作） (#6)
+  - [ ] 接続→表示 10秒以内（daemon ログで機械判定）
+  - [ ] 抜き差し20回連続成功（verify-replug.ps1）
+  - [ ] スリープ→復帰→再接続で配信再開
+  - [ ] 4時間ソークで fps・メモリ横ばい（verify-soak.ps1）
+  - [ ] ログオン後に手動操作ゼロで稼働（再起動1回で確認）
 
-## フェーズ4: iPad側（変更をまとめて1回で再インストール）
-
-- [ ] 待ち受け画面（未接続表示・直近切断理由）＋自動再接続の確認
-- [ ] 3本指タップで統計オーバーレイのトグル（既定OFF）
-- [ ] ビルド＋実機インストール（install-to-ipad.ps1。usbipd bind 切替＝K作業）
-
-## フェーズ5: 受入検証（K協力: ケーブル操作・スリープ操作）
-
-- [ ] 接続→表示 10秒以内（daemon ログで機械判定）
-- [ ] 抜き差し20回連続成功（verify-replug.ps1）
-- [ ] スリープ→復帰→再接続で配信再開
-- [ ] 4時間ソークで fps・メモリ横ばい（verify-soak.ps1）
-- [ ] ログオン後に手動操作ゼロで稼働（再起動1回で確認）
-
-## フェーズ6: 品質チェックとドキュメント
-
-- [ ] pc/ ビルドがクリーンに通る（警告増加なし）
-- [ ] iPad側 単体テスト（AnnexB変換等の既存テスト）が通る
-- [ ] pc/README.md に sidepadd の運用（登録・ログ場所・トラブル時）を追記
-- [ ] 実装後の振り返り（このファイル下部）
+- [ ] フェーズ6: 品質チェックとドキュメント (#7)
+  - [ ] pc/ ビルドがクリーンに通る（警告増加なし）
+  - [ ] iPad側 単体テスト（AnnexB変換等の既存テスト）が通る
+  - [ ] pc/README.md に sidepadd の運用（登録・ログ場所・トラブル時）を追記
+  - [ ] 実装後の振り返り（このファイル下部）
 
 ---
 
