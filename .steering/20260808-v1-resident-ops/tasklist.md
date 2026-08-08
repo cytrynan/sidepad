@@ -12,10 +12,12 @@ tracking: #1
 
 ## タスク（フェーズ単位で起票・サブタスクは本ファイルで管理）
 
-- [ ] フェーズ1: Pipeline抽出（挙動保存） (#2)
-  - [ ] encode_main.cpp からキャプチャ→エンコード→送信ループを `pipeline.{h,cpp}` に抽出（start/stop/統計取得API）
-  - [ ] `pc_encode_spike` CLI を Pipeline の薄いラッパに縮小（引数・出力形式は不変）
-  - [ ] 挙動保存の検証: 既存受入スクリプト（20260806 USB転送・20260807 E2E）を再走行し全項目PASS
+- [~] フェーズ1: Pipeline抽出（挙動保存） (#2)
+  - [x] encode_main.cpp からキャプチャ→エンコード→送信ループを `pipeline.{h,cpp}` に抽出（start/stop/統計取得API）
+  - [x] `pc_encode_spike` CLI を Pipeline の薄いラッパに縮小（引数・出力形式は不変）
+  - [~] 挙動保存の検証: 既存受入スクリプト（20260806 USB転送・20260807 E2E）を再走行し全項目PASS
+    - [x] ローカル分（2026-08-08）: 旧バイナリとの同条件比較で出力構造一致・警告増加なし／モック受信でtransport4項目PASS・PCダンプと受信再構成の fc /b バイト一致（1169フレーム/14MB）／レビュー(Opus)必須2件（Stop順序の+250msフレーム計上・再Start時の統計残留)修正済み
+    - [ ] 実機E2E分: 仮想DP@120＋iPadで20260807受入11項目の再走行（K作業=iPad接続・アプリ起動）
 
 - [ ] フェーズ2: sidepadd 常駐本体 (#3)
   - [ ] `usbmux_events`: usbmux Listen で Attached/Detached 受信（ConnectionType=USB 選別）
