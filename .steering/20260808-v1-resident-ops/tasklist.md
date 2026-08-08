@@ -12,15 +12,15 @@ tracking: #1
 
 ## タスク（フェーズ単位で起票・サブタスクは本ファイルで管理）
 
-- [~] フェーズ1: Pipeline抽出（挙動保存） (#2)
+- [x] フェーズ1: Pipeline抽出（挙動保存） (#2)
   - [x] encode_main.cpp からキャプチャ→エンコード→送信ループを `pipeline.{h,cpp}` に抽出（start/stop/統計取得API）
   - [x] `pc_encode_spike` CLI を Pipeline の薄いラッパに縮小（引数・出力形式は不変）
-  - [~] 挙動保存の検証: 既存受入スクリプト（20260806 USB転送・20260807 E2E）を再走行し全項目PASS
+  - [x] 挙動保存の検証: 既存受入スクリプト（20260806 USB転送・20260807 E2E）を再走行し全項目PASS
     - [x] ローカル分（2026-08-08）: 旧バイナリとの同条件比較で出力構造一致・警告増加なし／モック受信でtransport4項目PASS・PCダンプと受信再構成の fc /b バイト一致（1169フレーム/14MB）／レビュー(Opus)必須2件（Stop順序の+250msフレーム計上・再Start時の統計残留)修正済み
-    - [ ] 実機E2E分: 仮想DP@120＋iPadで20260807受入11項目の再走行（K作業=iPad接続・アプリ起動）
+    - [x] 実機E2E分（2026-08-08）: 仮想DP@120＋novsyncソースで**受入11項目全PASS・exit=0**（2401/2401・欠落0・latency p99 5.77ms・37.8Mbps。リファクタ前=2391/2391・p99 6.3msと同水準）。注: vsyncソースでの1走目はbitrate1項FAIL=既知の混在リフレッシュ60律速（dev/screen-capture-windows.md §7）
 
-- [ ] フェーズ2: sidepadd 常駐本体 (#3)
-  - [ ] `usbmux_events`: usbmux Listen で Attached/Detached 受信（ConnectionType=USB 選別）
+- [~] フェーズ2: sidepadd 常駐本体 (#3)
+  - [~] `usbmux_events`: usbmux Listen で Attached/Detached 受信（ConnectionType=USB 選別）
   - [ ] `vdd_control`: devcon による仮想DP有効/無効（インスタンスID自動特定）
   - [ ] `daemon_main`: 状態機械（IDLE→VDD_ON→WAIT_DISPLAY→STREAMING→TEARDOWN、バックオフ、全遷移ログ）
   - [ ] WAIT_DISPLAY の表示番号自動特定（--list-displays 判定ロジック流用・5sタイムアウト）
