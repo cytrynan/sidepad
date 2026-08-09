@@ -290,11 +290,14 @@ bool StreamSender::FinishConnect(std::string* error) {
                reinterpret_cast<const char*>(&send_timeout_ms),
                sizeof(send_timeout_ms));
     // Clear any recv timeout inherited from the usbmux plist session: the
-    // receiver loop treats recv<=0 as "link closed", so a periodic
-    // WSAETIMEDOUT would falsely kill it.
-    DWORD no_timeout = 0;
+    // A bounded recv keeps the receiver joinable even when AMDS never closes
+    // the socket after a cable pull (shutdown() is not guaranteed to wake an
+    // already-blocked recv). WSAETIMEDOUT is treated as "idle link, keep
+    // listening" in ReceiverLoop, so the timeout cannot falsely kill it.
+    DWORD recv_timeout_ms = 5'000;
     setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO,
-               reinterpret_cast<const char*>(&no_timeout), sizeof(no_timeout));
+               reinterpret_cast<const char*>(&recv_timeout_ms),
+               sizeof(recv_timeout_ms));
     stop_ = false;
     receiver_ = std::thread([this] { ReceiverLoop(); });
     return true;
@@ -365,6 +368,7 @@ void StreamSender::ReceiverLoop() {
     uint8_t chunk[65536];
     while (!stop_.load(std::memory_order_relaxed)) {
         const int r = recv(sock_, reinterpret_cast<char*>(chunk), sizeof(chunk), 0);
+        if (r < 0 && WSAGetLastError() == WSAETIMEDOUT) continue;  // idle link
         if (r <= 0) break;
         buffer.insert(buffer.end(), chunk, chunk + r);
 

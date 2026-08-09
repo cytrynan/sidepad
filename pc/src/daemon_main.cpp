@@ -147,6 +147,10 @@ int FindVirtualDisplayOutput() {
 struct DeviceState {
     std::mutex mutex;
     std::condition_variable cv;
+    // Set once at startup, before the listener thread exists. The listener
+    // thread logs event receipt itself so a wedged main loop can no longer
+    // hide whether usbmux events were delivered (2026-08-09 wedge lesson).
+    Logger* logger = nullptr;
     bool attached = false;
     // Set only on the false->true transition, consumed by the main loop:
     // session retries with the cable left in must neither re-log
@@ -163,6 +167,11 @@ struct DeviceState {
 
     void OnEvent(const UsbmuxDeviceEvent& ev) {
         std::lock_guard<std::mutex> lock(mutex);
+        if (logger) {
+            logger->Line("EVENT usbmux(listener): %s DeviceID=%lld%s",
+                         ev.attached ? "attached" : "detached", ev.device_id,
+                         ev.usb ? " (USB)" : "");
+        }
         if (ev.attached && ev.usb) {
             if (!attached) {
                 attach_time = Clock::now();
@@ -243,14 +252,33 @@ struct Options {
     long long bitrate_bps = 40'000'000;
 };
 
-// RAII: the virtual display goes dark on EVERY session exit path -- the
-// early failure returns used to leave the ghost monitor on the desktop
-// (review finding 1). The functional display check is the primary verdict;
-// devcon's own output is advisory (its exit code lies, and "No matching
-// devices" can simply mean already-gone).
-class VddSession {
+// Owns the virtual display ACROSS sessions (formerly a per-session RAII).
+// Rapid replug cycles used to devcon-toggle the VDD once per cycle; under
+// that churn PnP occasionally defers the transition ("Disabled on reboot")
+// and completes it asynchronously mid-capture -- observed 2026-08-10 in the
+// replug acceptance as ACCESS_LOST plus 21-23s recoveries. The keeper
+// (a) reuses an already-lit display for in-session retries and quick
+// replugs, and (b) lingers kVddLingerMs after detach before turning the
+// display off, so a replug inside the window never touches devcon.
+// The ghost-monitor guarantee (review finding 1) moves to the main loop:
+// every path into IDLE schedules the linger-off, and quit turns it off
+// immediately. The functional display check stays the primary verdict
+// (devcon's exit code lies).
+constexpr int kVddLingerMs = 10'000;
+
+class VddKeeper {
 public:
-    VddSession(VddControl& vdd, Logger& log) : vdd_(vdd), log_(log) {
+    VddKeeper(VddControl& vdd, Logger& log) : vdd_(vdd), log_(log) {}
+
+    // Session start. Idempotent: skips devcon when the display is already
+    // up (in-session retry, or a re-attach inside the linger window).
+    void EnsureOn() {
+        linger_armed_ = false;
+        if (FindVirtualDisplayOutput() >= 0) {
+            log_.Line("STATE vdd_on (reused: display already up)");
+            on_ = true;
+            return;
+        }
         std::string detail;
         if (!vdd_.Enable(&detail)) {
             log_.Line("WARN vdd enable failed (%s) -- continuing, display "
@@ -258,8 +286,28 @@ public:
         } else {
             log_.Line("STATE vdd_on (%s)", detail.c_str());
         }
+        on_ = true;
     }
-    ~VddSession() {
+
+    // Detach path: keep the display lit for the grace period.
+    void ArmLingerOff() {
+        if (!on_ || linger_armed_) return;
+        linger_armed_ = true;
+        linger_deadline_ = Clock::now() + std::chrono::milliseconds(kVddLingerMs);
+        log_.Line("STATE vdd linger %dms (reused if re-attached)", kVddLingerMs);
+    }
+
+    bool lingering() const { return on_ && linger_armed_; }
+    bool linger_expired() const {
+        return lingering() && Clock::now() >= linger_deadline_;
+    }
+
+    // Immediate off (linger expiry, quit). Never call with state.mutex held:
+    // devcon takes seconds and would stall the usbmux listener callback.
+    void Off() {
+        linger_armed_ = false;
+        if (!on_) return;
+        on_ = false;
         std::string detail;
         vdd_.Disable(&detail);
         bool display_gone = false;
@@ -277,20 +325,24 @@ public:
                       "needs elevation? (%s)", detail.c_str());
         }
     }
-    VddSession(const VddSession&) = delete;
-    VddSession& operator=(const VddSession&) = delete;
+
+    VddKeeper(const VddKeeper&) = delete;
+    VddKeeper& operator=(const VddKeeper&) = delete;
 
 private:
     VddControl& vdd_;
     Logger& log_;
+    bool on_ = false;
+    bool linger_armed_ = false;
+    Clock::time_point linger_deadline_{};
 };
 
 // One attach->stream->teardown cycle. Returns true when the session reached
 // STREAMING and ended normally (detach / --session-seconds), false on any
 // failure before or during streaming (caller backs off and retries).
-bool RunSession(const Options& opt, DeviceState& state, VddControl& vdd,
+bool RunSession(const Options& opt, DeviceState& state, VddKeeper& vdd_keeper,
                 Logger& log, FILE* csv, Clock::time_point attach_time) {
-    VddSession vdd_session(vdd, log);
+    vdd_keeper.EnsureOn();
 
     int display = -1;
     for (int waited = 0; waited <= kWaitDisplayTimeoutMs;
@@ -341,25 +393,33 @@ bool RunSession(const Options& opt, DeviceState& state, VddControl& vdd,
     long long last_frames = 0;
     auto last_stats_time = stream_start;
     bool ended_normally = false;
+    const char* stop_reason = "unknown";
     while (true) {
-        if (pipeline.stopping()) break;  // send failure or capture loss
+        if (pipeline.stopping()) {  // send failure or capture loss
+            stop_reason = "pipeline";
+            break;
+        }
         if (state.quit.load()) {
+            stop_reason = "quit";
             ended_normally = true;
             break;
         }
         if (state.suspended.load()) {
             log.Line("EVENT suspend: tearing down before sleep");
+            stop_reason = "suspend";
             ended_normally = true;
             break;
         }
         if (!state.IsAttached()) {
             log.Line("EVENT detached (usbmux)");
+            stop_reason = "detach";
             ended_normally = true;
             break;
         }
         const auto now = Clock::now();
         if (opt.session_seconds > 0 &&
             now - stream_start >= std::chrono::seconds(opt.session_seconds)) {
+            stop_reason = "session-limit";
             ended_normally = true;
             break;
         }
@@ -392,6 +452,10 @@ bool RunSession(const Options& opt, DeviceState& state, VddControl& vdd,
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
+    // Logged before Stop() on purpose: if a join inside Stop() ever wedges,
+    // this line localizes the hang to Stop() instead of leaving the log
+    // ending at "STATE streaming" with no clue (2026-08-09 wedge lesson).
+    log.Line("STATE stopping (%s); joining pipeline", stop_reason);
     pipeline.Stop();
     const double streamed_s =
         std::chrono::duration<double>(Clock::now() - stream_start).count();
@@ -406,8 +470,8 @@ bool RunSession(const Options& opt, DeviceState& state, VddControl& vdd,
                  pipeline.sent_frames());
     }
 
-    // The VDD turn-off (with its functional display check) happens in
-    // ~VddSession on every exit path of this function.
+    // The VDD turn-off now happens in the main loop (linger on IDLE entry,
+    // immediate on quit) -- see VddKeeper.
 
     // A session that died instantly (e.g. encoder loss loop) must not count
     // as healthy even if it ended via detach bookkeeping.
@@ -478,6 +542,7 @@ int main(int argc, char** argv) {
     }
 
     DeviceState state;
+    state.logger = &log;
     g_state = &state;
     SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
 
@@ -507,16 +572,38 @@ int main(int argc, char** argv) {
     }
     log.Line("STATE idle: waiting for iPad over USB (usbmux Listen)");
 
+    VddKeeper vdd_keeper(vdd, log);
     int backoff_ms = 1'000;
     while (!state.quit.load()) {
-        // IDLE: wait for an attach (or quit).
+        // Entering IDLE with the display still lit: schedule the linger-off.
+        // (A re-attach before expiry reuses the display; EnsureOn disarms.)
+        vdd_keeper.ArmLingerOff();
+
+        // IDLE: wait for an attach (or quit). While a linger is armed the
+        // wait polls so the off can fire without an event; afterwards it
+        // falls back to the predicate wait (lost-wakeup-safe, finding 3).
         Clock::time_point attach_time;
         {
             std::unique_lock<std::mutex> lock(state.mutex);
-            state.cv.wait(lock, [&] {
-                return (state.attached && !state.suspended.load()) ||
-                       state.quit.load();
-            });
+            for (;;) {
+                if ((state.attached && !state.suspended.load()) ||
+                    state.quit.load()) {
+                    break;
+                }
+                if (vdd_keeper.lingering()) {
+                    state.cv.wait_for(lock, std::chrono::milliseconds(250));
+                    if (vdd_keeper.linger_expired()) {
+                        lock.unlock();  // devcon takes seconds; don't stall OnEvent
+                        vdd_keeper.Off();
+                        lock.lock();
+                    }
+                } else {
+                    state.cv.wait(lock, [&] {
+                        return (state.attached && !state.suspended.load()) ||
+                               state.quit.load();
+                    });
+                }
+            }
             if (state.quit.load()) break;
             // Physical attach moment, not "this retry's start" -- the
             // attach->stream KPI must include failed attempts (finding 2).
@@ -528,7 +615,8 @@ int main(int argc, char** argv) {
             }
         }
 
-        const bool healthy = RunSession(opt, state, vdd, log, csv, attach_time);
+        const bool healthy =
+            RunSession(opt, state, vdd_keeper, log, csv, attach_time);
         if (opt.once) break;
         if (healthy) {
             backoff_ms = 1'000;
@@ -546,6 +634,7 @@ int main(int argc, char** argv) {
         }
     }
 
+    vdd_keeper.Off();  // quit: no linger, restore the monitor set now
     if (power_notify) PowerUnregisterSuspendResumeNotification(power_notify);
     listener.Stop();
     if (csv) std::fclose(csv);

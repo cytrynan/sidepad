@@ -25,21 +25,35 @@ $sinceTime = if ($Since) { [datetime]::ParseExact($Since, 'yyyy-MM-dd HH:mm:ss',
 $streamRx = [regex]'^\[(?<ts>[\d\-]+ [\d:\.]+)\] STATE streaming: .*\((?<sec>[\d\.]+)s after attach\)'
 $attachRx = [regex]'^\[(?<ts>[\d\-]+ [\d:\.]+)\] EVENT attached:'
 
+# attach → その後最初の streaming をペアリングして1サイクルとする。
+# セッション内の自動復帰（同一attachに対する2本目以降の streaming 行）は
+# サイクルに数えない（件数一致で弾くと復帰できたのにFAILになる。2026-08-10）。
+# streaming に到達しなかった attach（取り残し）は unreached として即FAIL。
 $attachCount = 0
 $streams = @()
+$unreached = 0
+$pendingAttach = $false
 foreach ($line in Get-Content $LogPath) {
     $m = $streamRx.Match($line)
     if ($m.Success) {
         $ts = [datetime]::ParseExact($m.Groups['ts'].Value, 'yyyy-MM-dd HH:mm:ss.fff', $null)
-        if ($ts -ge $sinceTime) { $streams += [pscustomobject]@{ Time = $ts; AttachToStreamSec = [double]$m.Groups['sec'].Value } }
+        if ($ts -ge $sinceTime -and $pendingAttach) {
+            $streams += [pscustomobject]@{ Time = $ts; AttachToStreamSec = [double]$m.Groups['sec'].Value }
+            $pendingAttach = $false
+        }
         continue
     }
     $a = $attachRx.Match($line)
     if ($a.Success) {
         $ts = [datetime]::ParseExact($a.Groups['ts'].Value, 'yyyy-MM-dd HH:mm:ss.fff', $null)
-        if ($ts -ge $sinceTime) { $attachCount++ }
+        if ($ts -ge $sinceTime) {
+            if ($pendingAttach) { $unreached++ }  # 前のattachがstreaming未到達のまま
+            $attachCount++
+            $pendingAttach = $true
+        }
     }
 }
+if ($pendingAttach) { $unreached++ }  # ログ末尾で未到達のまま終わった
 
 Write-Host "対象範囲: $(if ($Since) { $Since + ' 以降' } else { 'ログ全体' })"
 Write-Host "attachイベント: $attachCount 件 / streaming到達: $($streams.Count) 件"
@@ -56,11 +70,11 @@ if ($streams.Count -gt 0) {
 
 if ($Cycles -gt 0) {
     $under10 = @($streams | Where-Object { $_.AttachToStreamSec -le 10 }).Count
-    # attach == streaming の一致も要求: 到達しなかった抜き差しを無視して
-    # PASSにしない（受入は「20回**連続**で自動復帰」）
-    $pass = ($streams.Count -ge $Cycles) -and ($under10 -eq $streams.Count) -and ($attachCount -eq $streams.Count)
-    Write-Host ("[{0}] attach {1} 件 / streaming到達 {2} 件（要求 {3}）・全て10秒以内={4}" -f `
-        ($pass ? 'PASS' : 'FAIL'), $attachCount, $streams.Count, $Cycles, ($under10 -eq $streams.Count))
+    # 到達しなかった抜き差し（unreached）を無視してPASSにしない
+    # （受入は「20回**連続**で自動復帰」）
+    $pass = ($streams.Count -ge $Cycles) -and ($under10 -eq $streams.Count) -and ($unreached -eq 0)
+    Write-Host ("[{0}] attach {1} 件 / 到達サイクル {2} 件（要求 {3}）・未到達 {4} 件・全て10秒以内={5}" -f `
+        ($pass ? 'PASS' : 'FAIL'), $attachCount, $streams.Count, $Cycles, $unreached, ($under10 -eq $streams.Count))
     exit ($pass ? 0 : 2)
 }
 exit 0
