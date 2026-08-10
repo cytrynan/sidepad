@@ -47,6 +47,7 @@
 #include "pipeline.h"
 #include "usbmux_events.h"
 #include "vdd_control.h"
+#include "vdd_mode.h"
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -112,10 +113,77 @@ std::string LocalAppDataDir() {
 // --- Virtual display lookup --------------------------------------------------
 
 // Output index of the VDD virtual display on the default adapter, or -1.
-// Matches by current desktop mode 2048x1536 + 120Hz (the sidepad settings in
-// C:\VirtualDisplayDriver\vdd_settings.xml), same criterion --list-displays
-// prints as TARGET MODE. Index-based on purpose: Pipeline::InitCapture
-// enumerates the same default adapter, so indices agree.
+// Matches by current desktop mode (native 2732x2048 or fallback 2048x1536,
+// both at 120Hz -- vdd_mode.h), same criterion --list-displays prints as
+// TARGET MODE. Index-based on purpose: Pipeline::InitCapture enumerates the
+// same default adapter, so indices agree.
+bool IsVddMode(int w, int h, int hz) {
+    if (hz != kVddRefreshHz) return false;
+    return (w == kVddNativeWidth && h == kVddNativeHeight) ||
+           (w == kVddFallbackWidth && h == kVddFallbackHeight);
+}
+
+// Switch the virtual display to its native mode after every enable.
+// Windows remembers the last mode per monitor, so the VDD comes back at
+// whatever it used previously (2048x1536 during the spike era); mode
+// changes need no elevation but must run in the interactive session, which
+// the daemon does. Identification: the only non-primary desktop-attached
+// device whose mode list contains the native mode (the internal panel and
+// common externals don't list 2732x2048).
+void EnsureVddNativeMode(Logger& log) {
+    for (int waited = 0; waited <= 3'000; waited += 200) {
+        DISPLAY_DEVICEW dd{};
+        dd.cb = sizeof(dd);
+        for (DWORD i = 0; EnumDisplayDevicesW(nullptr, i, &dd, 0); ++i) {
+            if (!(dd.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP)) continue;
+            if (dd.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) continue;
+            DEVMODEW dm{};
+            dm.dmSize = sizeof(dm);
+            bool supports_native = false;
+            for (DWORD m = 0; EnumDisplaySettingsW(dd.DeviceName, m, &dm); ++m) {
+                if (dm.dmPelsWidth == kVddNativeWidth &&
+                    dm.dmPelsHeight == kVddNativeHeight &&
+                    dm.dmDisplayFrequency == kVddRefreshHz) {
+                    supports_native = true;
+                    break;
+                }
+            }
+            if (!supports_native) continue;
+
+            DEVMODEW cur{};
+            cur.dmSize = sizeof(cur);
+            if (EnumDisplaySettingsW(dd.DeviceName, ENUM_CURRENT_SETTINGS,
+                                     &cur) &&
+                cur.dmPelsWidth == kVddNativeWidth &&
+                cur.dmPelsHeight == kVddNativeHeight &&
+                cur.dmDisplayFrequency == kVddRefreshHz) {
+                return;  // already native
+            }
+            DEVMODEW want{};
+            want.dmSize = sizeof(want);
+            want.dmPelsWidth = kVddNativeWidth;
+            want.dmPelsHeight = kVddNativeHeight;
+            want.dmDisplayFrequency = kVddRefreshHz;
+            want.dmFields =
+                DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
+            const LONG r = ChangeDisplaySettingsExW(
+                dd.DeviceName, &want, nullptr, CDS_UPDATEREGISTRY, nullptr);
+            if (r == DISP_CHANGE_SUCCESSFUL) {
+                log.Line("MODE %dx%d@%d set on %ls", kVddNativeWidth,
+                         kVddNativeHeight, kVddRefreshHz, dd.DeviceName);
+            } else {
+                log.Line("WARN native mode change failed (%ld); staying at "
+                         "%ux%u@%u", static_cast<long>(r), cur.dmPelsWidth,
+                         cur.dmPelsHeight, cur.dmDisplayFrequency);
+            }
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    log.Line("WARN no display advertising %dx%d@%d; keeping fallback mode",
+             kVddNativeWidth, kVddNativeHeight, kVddRefreshHz);
+}
+
 int FindVirtualDisplayOutput() {
     ComPtr<IDXGIFactory1> factory;
     if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(factory.GetAddressOf())))) {
@@ -135,8 +203,9 @@ int FindVirtualDisplayOutput() {
         DXGI_OUTPUT_DESC od{};
         if (FAILED(output->GetDesc(&od)) || !od.AttachedToDesktop) continue;
         const auto& rc = od.DesktopCoordinates;
-        if (rc.right - rc.left == 2048 && rc.bottom - rc.top == 1536 &&
-            DisplayRefreshHz(od.DeviceName) == 120) {
+        if (IsVddMode(static_cast<int>(rc.right - rc.left),
+                      static_cast<int>(rc.bottom - rc.top),
+                      DisplayRefreshHz(od.DeviceName))) {
             return static_cast<int>(o);
         }
     }
@@ -343,6 +412,7 @@ private:
 bool RunSession(const Options& opt, DeviceState& state, VddKeeper& vdd_keeper,
                 Logger& log, FILE* csv, Clock::time_point attach_time) {
     vdd_keeper.EnsureOn();
+    EnsureVddNativeMode(log);  // self-heal to native res on every enable
 
     int display = -1;
     for (int waited = 0; waited <= kWaitDisplayTimeoutMs;
@@ -353,8 +423,35 @@ bool RunSession(const Options& opt, DeviceState& state, VddKeeper& vdd_keeper,
             std::chrono::milliseconds(kWaitDisplayPollMs));
     }
     if (display < 0) {
-        log.Line("FAIL wait_display: no 2048x1536@120 output within %dms",
-                 kWaitDisplayTimeoutMs);
+        log.Line("FAIL wait_display: no %dx%d/%dx%d@%d output within %dms",
+                 kVddNativeWidth, kVddNativeHeight, kVddFallbackWidth,
+                 kVddFallbackHeight, kVddRefreshHz, kWaitDisplayTimeoutMs);
+        // Dump what DXGI actually sees so a GDI/DXGI disagreement (e.g. the
+        // 2026-08-10 native-mode switch) is diagnosable from the log alone.
+        {
+            ComPtr<IDXGIFactory1> factory;
+            ComPtr<IDXGIAdapter1> adapter;
+            if (SUCCEEDED(CreateDXGIFactory1(
+                    IID_PPV_ARGS(factory.GetAddressOf()))) &&
+                factory->EnumAdapters1(0, adapter.GetAddressOf()) !=
+                    DXGI_ERROR_NOT_FOUND) {
+                for (UINT o = 0;; ++o) {
+                    ComPtr<IDXGIOutput> output;
+                    if (adapter->EnumOutputs(o, output.GetAddressOf()) ==
+                        DXGI_ERROR_NOT_FOUND) {
+                        break;
+                    }
+                    DXGI_OUTPUT_DESC od{};
+                    if (FAILED(output->GetDesc(&od))) continue;
+                    const auto& rc = od.DesktopCoordinates;
+                    log.Line("  dxgi output %u: %ls %ldx%ld@%d attached=%d", o,
+                             od.DeviceName, rc.right - rc.left,
+                             rc.bottom - rc.top,
+                             DisplayRefreshHz(od.DeviceName),
+                             od.AttachedToDesktop ? 1 : 0);
+                }
+            }
+        }
         return false;
     }
     log.Line("STATE wait_display ok: output %d", display);
@@ -482,6 +579,13 @@ bool RunSession(const Options& opt, DeviceState& state, VddKeeper& vdd_keeper,
 }  // namespace
 
 int main(int argc, char** argv) {
+    // Physical pixels everywhere. Without this the process is DPI-virtualized
+    // and DXGI DesktopCoordinates come back scaled (2732x2048 with the auto-
+    // assigned 150% scaling showed as 1821x1365, so wait_display could never
+    // match the native mode -- 2026-08-10). GDI mode queries were unaffected,
+    // which is why the mismatch only appeared on the DXGI side.
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
     setvbuf(stdout, nullptr, _IONBF, 0);
     Options opt;
     for (int i = 1; i < argc; ++i) {

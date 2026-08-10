@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "pipeline.h"
+#include "vdd_mode.h"
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -107,7 +108,12 @@ int ListDisplays() {
                             : static_cast<int>((m.RefreshRate.Numerator +
                                                 m.RefreshRate.Denominator / 2) /
                                                m.RefreshRate.Denominator);
-                    if (m.Width == 2048 && m.Height == 1536 && hz == 120) {
+                    if ((m.Width == kVddNativeWidth &&
+                         m.Height == kVddNativeHeight &&
+                         hz == kVddRefreshHz) ||
+                        (m.Width == kVddFallbackWidth &&
+                         m.Height == kVddFallbackHeight &&
+                         hz == kVddRefreshHz)) {
                         target_found = true;
                     }
                     if (hz < 100) continue;
@@ -131,8 +137,9 @@ int ListDisplays() {
     std::printf(
         "note: --display N indexes outputs on the default D3D11 adapter "
         "(usually adapter 0)\n");
-    std::printf("TARGET MODE 2048x1536@120: %s\n",
-                target_found ? "FOUND" : "NOT FOUND");
+    std::printf("TARGET MODE %dx%d/%dx%d@%d: %s\n", kVddNativeWidth,
+                kVddNativeHeight, kVddFallbackWidth, kVddFallbackHeight,
+                kVddRefreshHz, target_found ? "FOUND" : "NOT FOUND");
     return 0;
 }
 
@@ -208,6 +215,9 @@ Options ParseArgs(int argc, char** argv) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    // Physical pixels for DXGI coordinates (see daemon_main.cpp main()).
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
     setvbuf(stdout, nullptr, _IONBF, 0);
     const Options opt = ParseArgs(argc, argv);
     if (opt.list_displays) return ListDisplays();

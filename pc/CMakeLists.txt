@@ -47,8 +47,10 @@ foreach(target pc_capture_spike pc_test_source pc_encode_spike sidepadd)
   # Desktop Duplication needs Windows 8+ headers (DXGI 1.2 / IDXGIOutput1).
   # UNICODE keeps the resource-id macros (IDC_ARROW and friends) on their
   # wide form, matching the ...W APIs both sources call explicitly.
+  # 0x0A00 (Win10): SetProcessDpiAwarenessContext needs it; Desktop
+  # Duplication's Win8+ requirement is covered a fortiori.
   target_compile_definitions(${target} PRIVATE
-    _WIN32_WINNT=0x0602
+    _WIN32_WINNT=0x0A00
     WIN32_LEAN_AND_MEAN
     NOMINMAX
     UNICODE
