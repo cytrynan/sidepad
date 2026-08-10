@@ -21,19 +21,22 @@ add_executable(pc_test_source src/testsource.cpp)
 # pc/third_party/AMF/README.md); the runtime amfrt64.dll ships with the AMD
 # driver and is loaded dynamically, so no AMF import library is linked.
 add_executable(pc_encode_spike src/encode_main.cpp src/pipeline.cpp
-                               src/amf_encoder.cpp src/stream_sender.cpp)
+                               src/amf_encoder.cpp src/stream_sender.cpp
+                               src/cursor_compositor.cpp)
 target_include_directories(pc_encode_spike PRIVATE third_party/AMF/include)
 # winmm: timeBeginPeriod / ws2_32: StreamSender (usbmux + TCP transport)
-target_link_libraries(pc_encode_spike PRIVATE winmm ws2_32)
+# d3dcompiler: CursorCompositor's runtime-compiled blend shaders
+target_link_libraries(pc_encode_spike PRIVATE winmm ws2_32 d3dcompiler)
 
 # sidepadd: the resident daemon (usbmux attach detection -> VDD toggle ->
 # Pipeline streaming). Same pipeline objects as the spike on purpose --
 # the spike stays the acceptance harness for the shared code.
 add_executable(sidepadd src/daemon_main.cpp src/pipeline.cpp
                         src/amf_encoder.cpp src/stream_sender.cpp
-                        src/usbmux_events.cpp src/vdd_control.cpp)
+                        src/usbmux_events.cpp src/vdd_control.cpp
+                        src/cursor_compositor.cpp)
 target_include_directories(sidepadd PRIVATE third_party/AMF/include)
-target_link_libraries(sidepadd PRIVATE winmm ws2_32)
+target_link_libraries(sidepadd PRIVATE winmm ws2_32 d3dcompiler)
 
 # d3d11.lib / dxgi.lib are pulled in via #pragma comment(lib, ...) in the
 # sources, but listing them here too is harmless and makes the dependency

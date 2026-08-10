@@ -188,6 +188,17 @@ bool Pipeline::InitCapture(UINT display_index, std::string* error) {
     height_ = static_cast<int>(rect.bottom - rect.top);
     fps_ = DisplayRefreshHz(output_desc_.DeviceName);
 
+    // Fail-soft: without the compositor the stream still works, the pointer
+    // is just invisible on the extended display (pre-20260810 behavior).
+    std::string cursor_error;
+    cursor_ok_ =
+        cursor_.Init(device_.Get(), context_.Get(), width_, height_,
+                     &cursor_error);
+    if (!cursor_ok_) {
+        std::fprintf(stderr, "[warn] cursor compositing disabled: %s\n",
+                     cursor_error.c_str());
+    }
+
     LARGE_INTEGER qpc_freq{};
     QueryPerformanceFrequency(&qpc_freq);
     qpc_freq_ = qpc_freq.QuadPart;
@@ -333,17 +344,42 @@ void Pipeline::CaptureLoop() {
         }
         ScopedFrameRelease release_guard(duplication_.Get());
 
-        if (frame_info.LastPresentTime.QuadPart == 0) {
-            continue;  // cursor-only update
-        }
+        cursor_.OnFrameInfo(duplication_.Get(), frame_info);
+        const bool desktop_updated = frame_info.LastPresentTime.QuadPart != 0;
+        const bool mouse_updated = CursorCompositor::MouseUpdated(frame_info);
 
-        ComPtr<ID3D11Texture2D> frame_texture;
-        if (FAILED(desktop_resource.As(&frame_texture))) {
+        // Without the compositor this reduces to the old behavior:
+        // cursor-only updates are skipped.
+        if (!desktop_updated && !(cursor_ok_ && mouse_updated)) {
             continue;
         }
 
         LARGE_INTEGER now{};
         QueryPerformanceCounter(&now);
+
+        // Rate-limit cursor-only frames to ~120Hz: a fast mouse must not
+        // saturate the encoder or the link on an otherwise static screen.
+        if (!desktop_updated) {
+            const double since_ms = (now.QuadPart - last_cursor_submit_qpc_) *
+                                    1000.0 / static_cast<double>(qpc_freq_);
+            if (since_ms < 8.0) continue;
+        }
+
+        ComPtr<ID3D11Texture2D> frame_texture;
+        if (desktop_updated && FAILED(desktop_resource.As(&frame_texture))) {
+            continue;
+        }
+
+        ID3D11Texture2D* submit_texture = frame_texture.Get();
+        if (cursor_ok_) {
+            // nullptr = cursor-only: re-composite over the stored desktop.
+            submit_texture = cursor_.Compose(frame_texture.Get());
+            if (!submit_texture) continue;  // no desktop copy yet
+        } else if (!submit_texture) {
+            continue;
+        }
+        if (!desktop_updated) last_cursor_submit_qpc_ = now.QuadPart;
+
         const long long pts = QpcTo100ns(now.QuadPart, qpc_freq_);
 
         // Reserve the latency slot before submit so the drain thread can
@@ -352,7 +388,7 @@ void Pipeline::CaptureLoop() {
             std::lock_guard<std::mutex> lock(inflight_mutex_);
             inflight_submit_qpc_[pts] = now.QuadPart;
         }
-        const SubmitResult sr = encoder_.SubmitFrame(frame_texture.Get(), pts);
+        const SubmitResult sr = encoder_.SubmitFrame(submit_texture, pts);
         if (sr != SubmitResult::kSubmitted) {
             std::lock_guard<std::mutex> lock(inflight_mutex_);
             inflight_submit_qpc_.erase(pts);

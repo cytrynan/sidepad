@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "amf_encoder.h"
+#include "cursor_compositor.h"
 #include "stream_sender.h"
 
 // Current refresh rate of a GDI display device (e.g. L"\\\\.\\DISPLAY3");
@@ -134,6 +135,12 @@ private:
     int height_ = 0;
     int fps_ = 60;
     bool timer_period_raised_ = false;
+
+    // Pointer compositing (capture thread only). Fail-soft: when Init
+    // fails the pipeline streams without a visible cursor, as before.
+    CursorCompositor cursor_;
+    bool cursor_ok_ = false;
+    long long last_cursor_submit_qpc_ = 0;  // rate limit for cursor-only frames
 
     // Encode / outputs
     AmfEncoderConfig config_;
