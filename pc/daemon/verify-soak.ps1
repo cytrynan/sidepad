@@ -13,6 +13,10 @@
 
 param(
     [Parameter(Mandatory = $true)][string]$Since,
+    # 区間の終端（省略時はCSV末尾まで）。セッション再開でframes_totalが
+    # リセットされる境界を跨ぐと単調増加判定が偽陽性FAILになるため、
+    # 連続セッションの終端で区切って判定する（2026-08-10）。
+    [string]$Until = '',
     [double]$Hours = 4,
     [int]$StatsSeconds = 60,
     [string]$CsvPath = "$env:LOCALAPPDATA\sidepad\stats.csv"
@@ -22,7 +26,8 @@ $ErrorActionPreference = 'Stop'
 if (-not (Test-Path $CsvPath)) { Write-Host "NG: CSVが無い: $CsvPath"; exit 1 }
 
 $sinceTime = [datetime]::ParseExact($Since, 'yyyy-MM-dd HH:mm:ss', $null)
-$rows = Import-Csv $CsvPath | Where-Object { [datetime]$_.time -ge $sinceTime }
+$untilTime = if ($Until) { [datetime]::ParseExact($Until, 'yyyy-MM-dd HH:mm:ss', $null) } else { [datetime]::MaxValue }
+$rows = Import-Csv $CsvPath | Where-Object { [datetime]$_.time -ge $sinceTime -and [datetime]$_.time -le $untilTime }
 if ($rows.Count -lt 4) { Write-Host "NG: 対象行が $($rows.Count) 行しかない（4行以上必要）"; exit 1 }
 
 $half = [int][math]::Floor($rows.Count / 2)
