@@ -115,8 +115,8 @@ std::string LocalAppDataDir() {
 // Output index of the VDD virtual display on the default adapter, or -1.
 // Matches by current desktop mode (native 2732x2048 or fallback 2048x1536,
 // both at 120Hz -- vdd_mode.h), same criterion --list-displays prints as
-// TARGET MODE. Index-based on purpose: Pipeline::InitCapture enumerates the
-// same default adapter, so indices agree.
+// NATIVE/FALLBACK MODE. Index-based on purpose: Pipeline::InitCapture
+// enumerates the same default adapter, so indices agree.
 bool IsVddMode(int w, int h, int hz) {
     if (hz != kVddRefreshHz) return false;
     return (w == kVddNativeWidth && h == kVddNativeHeight) ||
@@ -130,7 +130,15 @@ bool IsVddMode(int w, int h, int hz) {
 // the daemon does. Identification: the only non-primary desktop-attached
 // device whose mode list contains the native mode (the internal panel and
 // common externals don't list 2732x2048).
-void EnsureVddNativeMode(Logger& log) {
+//
+// MUST be called after the display is already enumerable (wait_display):
+// a cold devcon enable takes a measured 10-13s of PnP re-enumeration, so
+// any polling budget here that is shorter than kWaitDisplayTimeoutMs would
+// structurally time out on the plug-and-play path and silently leave the
+// fallback mode in place (review 2026-08-11 A-1). The short poll below
+// only bridges GDI/DXGI enumeration skew, not device bring-up.
+// Returns true when it issued a successful mode change.
+bool EnsureVddNativeMode(Logger& log) {
     for (int waited = 0; waited <= 3'000; waited += 200) {
         DISPLAY_DEVICEW dd{};
         dd.cb = sizeof(dd);
@@ -157,7 +165,7 @@ void EnsureVddNativeMode(Logger& log) {
                 cur.dmPelsWidth == kVddNativeWidth &&
                 cur.dmPelsHeight == kVddNativeHeight &&
                 cur.dmDisplayFrequency == kVddRefreshHz) {
-                return;  // already native
+                return false;  // already native
             }
             DEVMODEW want{};
             want.dmSize = sizeof(want);
@@ -171,20 +179,23 @@ void EnsureVddNativeMode(Logger& log) {
             if (r == DISP_CHANGE_SUCCESSFUL) {
                 log.Line("MODE %dx%d@%d set on %ls", kVddNativeWidth,
                          kVddNativeHeight, kVddRefreshHz, dd.DeviceName);
-            } else {
-                log.Line("WARN native mode change failed (%ld); staying at "
-                         "%ux%u@%u", static_cast<long>(r), cur.dmPelsWidth,
-                         cur.dmPelsHeight, cur.dmDisplayFrequency);
+                return true;
             }
-            return;
+            log.Line("WARN native mode change failed (%ld); staying at "
+                     "%ux%u@%u", static_cast<long>(r), cur.dmPelsWidth,
+                     cur.dmPelsHeight, cur.dmDisplayFrequency);
+            return false;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
     log.Line("WARN no display advertising %dx%d@%d; keeping fallback mode",
              kVddNativeWidth, kVddNativeHeight, kVddRefreshHz);
+    return false;
 }
 
-int FindVirtualDisplayOutput() {
+// `out_width`, when non-null, receives the matched output's current desktop
+// width so callers can tell native (2732) from fallback (2048) apart.
+int FindVirtualDisplayOutput(int* out_width = nullptr) {
     ComPtr<IDXGIFactory1> factory;
     if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(factory.GetAddressOf())))) {
         return -1;
@@ -203,9 +214,10 @@ int FindVirtualDisplayOutput() {
         DXGI_OUTPUT_DESC od{};
         if (FAILED(output->GetDesc(&od)) || !od.AttachedToDesktop) continue;
         const auto& rc = od.DesktopCoordinates;
-        if (IsVddMode(static_cast<int>(rc.right - rc.left),
-                      static_cast<int>(rc.bottom - rc.top),
+        const int w = static_cast<int>(rc.right - rc.left);
+        if (IsVddMode(w, static_cast<int>(rc.bottom - rc.top),
                       DisplayRefreshHz(od.DeviceName))) {
+            if (out_width) *out_width = w;
             return static_cast<int>(o);
         }
     }
@@ -412,7 +424,6 @@ private:
 bool RunSession(const Options& opt, DeviceState& state, VddKeeper& vdd_keeper,
                 Logger& log, FILE* csv, Clock::time_point attach_time) {
     vdd_keeper.EnsureOn();
-    EnsureVddNativeMode(log);  // self-heal to native res on every enable
 
     int display = -1;
     for (int waited = 0; waited <= kWaitDisplayTimeoutMs;
@@ -455,6 +466,30 @@ bool RunSession(const Options& opt, DeviceState& state, VddKeeper& vdd_keeper,
         return false;
     }
     log.Line("STATE wait_display ok: output %d", display);
+
+    // Self-heal to native res now that the display is enumerable (calling
+    // this before wait_display would always time out on a cold devcon
+    // enable -- 10-13s PnP bring-up vs its 3s poll; review 2026-08-11 A-1).
+    // A successful mode change alters the output's desktop mode, so re-find
+    // the output and wait until DXGI reports the native width before
+    // capturing (a capture opened mid-switch would see the stale mode).
+    if (EnsureVddNativeMode(log)) {
+        int w = 0;
+        for (int waited = 0; waited <= 3'000; waited += kWaitDisplayPollMs) {
+            const int d = FindVirtualDisplayOutput(&w);
+            if (d >= 0 && w == kVddNativeWidth) {
+                display = d;
+                break;
+            }
+            if (state.quit.load()) break;
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(kWaitDisplayPollMs));
+        }
+        if (w != kVddNativeWidth) {
+            log.Line("WARN native mode set but DXGI still reports %d wide; "
+                     "capturing as-is", w);
+        }
+    }
 
     Pipeline pipeline;
     std::string err;
@@ -534,12 +569,14 @@ bool RunSession(const Options& opt, DeviceState& state, VddKeeper& vdd_keeper,
                 GetLocalTime(&st);
                 std::fprintf(csv,
                              "%04u-%02u-%02uT%02u:%02u:%02u,%.2f,%lld,%.2f,"
-                             "%.1f,%lld,%lld\n",
+                             "%.1f,%lld,%lld,%lld,%lld\n",
                              st.wYear, st.wMonth, st.wDay, st.wHour,
                              st.wMinute, st.wSecond, fps, frames, p99,
                              WorkingSetMb(),
                              pipeline.encoder().input_full_drops(),
-                             pipeline.encoder().pool_starved_drops());
+                             pipeline.encoder().pool_starved_drops(),
+                             pipeline.cursor_only_frames(),
+                             pipeline.cursor_drawn_frames());
                 std::fflush(csv);
             }
             last_frames = frames;
@@ -629,8 +666,34 @@ int main(int argc, char** argv) {
         return 1;
     }
     const std::string csv_path = dir + "\\stats.csv";
-    const bool csv_new =
+    static const char kCsvHeader[] =
+        "time,fps,frames_total,lat_p99_ms,working_set_mb,"
+        "drops_input,drops_pool,cursor_only_total,cursor_drawn_total\n";
+    // Import-Csv maps values to the FILE's first line, so appending wider
+    // rows to a file with an older header would silently drop the new
+    // columns. Rotate instead of mixing schemas.
+    bool csv_new =
         GetFileAttributesA(csv_path.c_str()) == INVALID_FILE_ATTRIBUTES;
+    if (!csv_new) {
+        std::string first_line;
+        if (FILE* f = std::fopen(csv_path.c_str(), "rb")) {
+            char buf[256] = {};
+            if (std::fgets(buf, sizeof(buf), f)) first_line = buf;
+            std::fclose(f);
+        }
+        if (first_line != kCsvHeader) {
+            const std::string rotated = dir + "\\stats-oldheader.csv";
+            std::remove(rotated.c_str());
+            if (std::rename(csv_path.c_str(), rotated.c_str()) == 0) {
+                log.Line("EVENT stats.csv rotated to stats-oldheader.csv "
+                         "(header changed)");
+                csv_new = true;
+            } else {
+                log.Line("WARN stats.csv header is stale and rotation "
+                         "failed; new columns will be dropped by Import-Csv");
+            }
+        }
+    }
     FILE* csv = std::fopen(csv_path.c_str(), "ab");
     if (!csv) {
         // Not fatal, but the soak evidence silently disappearing is
@@ -639,9 +702,7 @@ int main(int argc, char** argv) {
                  csv_path.c_str());
     }
     if (csv && csv_new) {
-        std::fprintf(csv,
-                     "time,fps,frames_total,lat_p99_ms,working_set_mb,"
-                     "drops_input,drops_pool\n");
+        std::fprintf(csv, "%s", kCsvHeader);
         std::fflush(csv);
     }
 

@@ -65,7 +65,11 @@ int ListDisplays() {
     ComPtr<IDXGIFactory1> factory;
     FailIfErr(CreateDXGIFactory1(IID_PPV_ARGS(factory.GetAddressOf())),
               "CreateDXGIFactory1");
-    bool target_found = false;  // 2048x1536@120 (IddCx導入の受入基準1)
+    // Reported separately: a merged FOUND cannot distinguish "native mode
+    // available" from "only the fallback survived a driver reinstall"
+    // (review 2026-08-11 B-3).
+    bool native_found = false;    // 2732x2048@120
+    bool fallback_found = false;  // 2048x1536@120 (IddCx導入の受入基準1)
     for (UINT a = 0;; ++a) {
         ComPtr<IDXGIAdapter1> adapter;
         if (factory->EnumAdapters1(a, adapter.GetAddressOf()) ==
@@ -108,13 +112,14 @@ int ListDisplays() {
                             : static_cast<int>((m.RefreshRate.Numerator +
                                                 m.RefreshRate.Denominator / 2) /
                                                m.RefreshRate.Denominator);
-                    if ((m.Width == kVddNativeWidth &&
-                         m.Height == kVddNativeHeight &&
-                         hz == kVddRefreshHz) ||
-                        (m.Width == kVddFallbackWidth &&
-                         m.Height == kVddFallbackHeight &&
-                         hz == kVddRefreshHz)) {
-                        target_found = true;
+                    if (m.Width == kVddNativeWidth &&
+                        m.Height == kVddNativeHeight && hz == kVddRefreshHz) {
+                        native_found = true;
+                    }
+                    if (m.Width == kVddFallbackWidth &&
+                        m.Height == kVddFallbackHeight &&
+                        hz == kVddRefreshHz) {
+                        fallback_found = true;
                     }
                     if (hz < 100) continue;
                     char buf[64];
@@ -137,9 +142,12 @@ int ListDisplays() {
     std::printf(
         "note: --display N indexes outputs on the default D3D11 adapter "
         "(usually adapter 0)\n");
-    std::printf("TARGET MODE %dx%d/%dx%d@%d: %s\n", kVddNativeWidth,
-                kVddNativeHeight, kVddFallbackWidth, kVddFallbackHeight,
-                kVddRefreshHz, target_found ? "FOUND" : "NOT FOUND");
+    std::printf("NATIVE MODE %dx%d@%d: %s\n", kVddNativeWidth,
+                kVddNativeHeight, kVddRefreshHz,
+                native_found ? "FOUND" : "NOT FOUND");
+    std::printf("FALLBACK MODE %dx%d@%d: %s\n", kVddFallbackWidth,
+                kVddFallbackHeight, kVddRefreshHz,
+                fallback_found ? "FOUND" : "NOT FOUND");
     return 0;
 }
 

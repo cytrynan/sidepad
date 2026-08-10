@@ -1,7 +1,8 @@
 ﻿# verify-vdd.ps1 — 仮想ディスプレイの出現とモード確認（非管理者・くろこ実行用）
 #
 # DXGI 経由（pc_encode_spike --list-displays）で全アダプタ×出力・モード一覧・
-# 判定行 "TARGET MODE 2048x1536@120: FOUND/NOT FOUND" を出す。
+# 判定行 "NATIVE MODE 2732x2048@120" / "FALLBACK MODE 2048x1536@120" の
+# FOUND/NOT FOUND を別行で出す（合算判定はネイティブ喪失を隠すため廃止）。
 #
 # 注意: GDI(EnumDisplayDevices) の P/Invoke 実装は、くろこの自動化セッション
 # （サンドボックス）では EnumDisplayDevices が常に FALSE を返し使えなかったため

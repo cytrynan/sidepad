@@ -283,7 +283,7 @@ ID3D11Texture2D* CursorCompositor::Compose(ID3D11Texture2D* captured) {
 
     context_->CopyResource(work_.Get(), desktop_.Get());
     if (visible_ && sprite_srv_) {
-        DrawPointer();
+        DrawPointer();  // increments drawn_ after the actual Draw call
     }
     return work_.Get();
 }
@@ -325,6 +325,7 @@ void CursorCompositor::DrawPointer() {
     context_->PSSetShaderResources(0, 1, sprite_srv_.GetAddressOf());
     context_->PSSetSamplers(0, 1, sampler_.GetAddressOf());
     context_->Draw(4, 0);
+    drawn_.fetch_add(1, std::memory_order_relaxed);
 
     // Unbind the RTV so the texture can be read by later copies without a
     // hazard warning.

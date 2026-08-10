@@ -28,6 +28,7 @@
 #include <dxgi1_2.h>
 #include <wrl/client.h>
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -60,6 +61,14 @@ public:
 
     bool ready() const { return initialized_; }
 
+    // Frames in which the pointer sprite was actually blended (DrawPointer
+    // ran). The fps-rise machine check must key on this, not on frame
+    // counts: cursor-only frames are emitted even when the sprite path is
+    // broken (shape rejected / SRV creation failed), so a frame-count rise
+    // proves only that the code path is alive, not that a cursor is drawn.
+    long long drawn() const { return drawn_.load(std::memory_order_relaxed); }
+    void ResetDrawnCount() { drawn_.store(0, std::memory_order_relaxed); }
+
 private:
     void UpdateShape(const DXGI_OUTDUPL_POINTER_SHAPE_INFO& info,
                      const std::vector<uint8_t>& data);
@@ -82,6 +91,9 @@ private:
     int height_ = 0;
     bool initialized_ = false;
     bool have_desktop_ = false;
+    // Written on the capture thread, read from the stats path (atomic:
+    // cross-thread read of a plain long long would tear on paper).
+    std::atomic<long long> drawn_{0};
 
     // Pointer state (capture thread only, no locking needed).
     bool visible_ = false;

@@ -104,7 +104,20 @@ public:
     // Latency samples accumulated since the previous call (drain thread
     // pushes under a mutex; this swaps the window out). For the daemon's
     // periodic CSV; encoded_frames() below is atomic and equally safe.
+    // Cursor-only frames are excluded: they re-encode a static desktop,
+    // sit in the low tail, and would dilute the p99 that the +2ms
+    // acceptance bound is judged on (review 2026-08-11 B-2).
     std::vector<double> TakeLatencyWindow();
+
+    // Cursor-only frames submitted (capture side) and frames where the
+    // pointer sprite was actually drawn. Both cumulative since Start();
+    // safe while streaming. Lets a judge separate desktop fps from
+    // cursor-induced fps after the fact, and proves a cursor was really
+    // composited (review 2026-08-11 B-1/B-2).
+    long long cursor_only_frames() const {
+        return cursor_only_frames_.load(std::memory_order_relaxed);
+    }
+    long long cursor_drawn_frames() const { return cursor_.drawn(); }
 
     // --- Post-Stop statistics (see threading contract) ---
     // Empty string = no fatal error. Formatted exactly like the spike's
@@ -156,10 +169,15 @@ private:
     std::atomic<bool> capture_stop_{false};  // stops the capture thread only
     bool started_ = false;
 
-    // pts -> submit-time QPC for submit->output latency. Guarded: the
-    // capture thread inserts, the drain thread erases.
+    // pts -> submit-time QPC (+ cursor-only flag) for submit->output
+    // latency. Guarded: the capture thread inserts, the drain thread
+    // erases.
+    struct InflightInfo {
+        long long submit_qpc;
+        bool cursor_only;
+    };
     std::mutex inflight_mutex_;
-    std::unordered_map<long long, long long> inflight_submit_qpc_;
+    std::unordered_map<long long, InflightInfo> inflight_submit_qpc_;
     long long qpc_freq_ = 1;
 
     // Latency window for TakeLatencyWindow (mutex-guarded, tiny critical
@@ -179,6 +197,8 @@ private:
     long long sent_frames_ = 0;
     long long captured_ = 0;        // capture thread, read after Stop
     long long submit_errors_ = 0;   // capture thread, read after Stop
+    // Capture thread writes, stats/CSV path reads while streaming.
+    std::atomic<long long> cursor_only_frames_{0};
     std::atomic<bool> send_failed_{false};
     // fatal_error_ is written by the capture thread, then fatal_ is set with
     // release order; Stop() reads fatal_ (acquire) to decide whether to skip

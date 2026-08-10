@@ -285,6 +285,9 @@ void Pipeline::Start() {
     sent_frames_ = 0;
     captured_ = 0;
     submit_errors_ = 0;
+    cursor_only_frames_.store(0, std::memory_order_relaxed);
+    last_cursor_submit_qpc_ = 0;
+    cursor_.ResetDrawnCount();
 
     drain_thread_ = std::thread([this] { DrainLoop(); });
     capture_thread_ = std::thread([this] { CaptureLoop(); });
@@ -386,7 +389,7 @@ void Pipeline::CaptureLoop() {
         // never see an output whose submit time isn't recorded yet.
         {
             std::lock_guard<std::mutex> lock(inflight_mutex_);
-            inflight_submit_qpc_[pts] = now.QuadPart;
+            inflight_submit_qpc_[pts] = {now.QuadPart, !desktop_updated};
         }
         const SubmitResult sr = encoder_.SubmitFrame(submit_texture, pts);
         if (sr != SubmitResult::kSubmitted) {
@@ -395,6 +398,9 @@ void Pipeline::CaptureLoop() {
             if (sr == SubmitResult::kError) ++submit_errors_;
         } else {
             ++captured_;
+            if (!desktop_updated) {
+                cursor_only_frames_.fetch_add(1, std::memory_order_relaxed);
+            }
         }
     }
 }
@@ -411,15 +417,21 @@ void Pipeline::DrainLoop() {
             QueryPerformanceCounter(&now);
 
             double lat_ms = -1.0;
+            bool cursor_only = false;
             {
                 std::lock_guard<std::mutex> lock(inflight_mutex_);
                 auto it = inflight_submit_qpc_.find(f.pts_100ns);
                 if (it != inflight_submit_qpc_.end()) {
-                    lat_ms = (now.QuadPart - it->second) * 1000.0 / qpc_freq_;
+                    lat_ms = (now.QuadPart - it->second.submit_qpc) * 1000.0 /
+                             qpc_freq_;
+                    cursor_only = it->second.cursor_only;
                     inflight_submit_qpc_.erase(it);
                 }
             }
-            if (lat_ms >= 0) {
+            // Cursor-only frames re-encode a static desktop and land in the
+            // low tail; keeping them out of the latency series preserves the
+            // p99's meaning (and its comparability with pre-cursor runs).
+            if (lat_ms >= 0 && !cursor_only) {
                 if (collect_full_series_) latency_ms_all_.push_back(lat_ms);
                 window_lat_sum += lat_ms;
                 {
