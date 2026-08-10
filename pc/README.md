@@ -310,3 +310,43 @@ Notes for future readers:
 - `CMakeLists.txt` — minimal CMake setup, C++17, links `d3d11`/`dxgi`.
 - `build.ps1` — locates VS via `vswhere`, sources `vcvars64.bat`, drives
   VS's bundled CMake+Ninja. `-Run` flag builds and runs in one step.
+
+## sidepadd の運用（v1 常駐・2026-08-10 受入済み）
+
+ケーブルを挿すだけで iPad が拡張ディスプレイになる常駐デーモン。
+
+### 登録・解除（管理者 PowerShell）
+
+```powershell
+pwsh -File pc\daemon\install-task.ps1            # タスク登録＋即起動（ログオン時・最上位特権）
+pwsh -File pc\daemon\install-task.ps1 -Uninstall # 解除（プロセスも停止）
+pwsh -File pc\daemon\install-task.ps1 -Status    # 状態表示（非管理者可）
+```
+
+タスク名は `sidepadd`。起動/停止だけなら非管理者でも
+`Start-ScheduledTask sidepadd` / `Stop-ScheduledTask sidepadd` が通る（所有者のため）。
+
+### ログ・統計
+
+- `%LOCALAPPDATA%\sidepad\sidepadd.log` — 全状態遷移（1行ごとにflush。無言=受入エビデンス欠落として扱う）
+- `%LOCALAPPDATA%\sidepad\stats.csv` — STREAMING中60秒周期（fps/フレーム累計/p99/working set/drops）
+
+### 受入判定スクリプト（`pc\daemon\`）
+
+```powershell
+pwsh -File pc\daemon\verify-replug.ps1 -Since "YYYY-MM-DD HH:mm:ss" -Cycles 20
+pwsh -File pc\daemon\verify-soak.ps1  -Since "..." -Until "..." -Hours 4
+```
+
+- replug は attach→**最初の** streaming をペアリングして判定（セッション内自動復帰の2本目以降は数えない・未到達attachは即FAIL）
+- soak の `-Until` は連続セッションの終端で区切る（境界を跨ぐと frames_total リセットで偽陽性FAIL）
+
+### トラブル時
+
+- **映らない**: ログ末尾を見る。`STATE streaming` のまま無言なら固着（過去例: 2026-08-09。現行は
+  recvタイムアウト＋停止理由ログ＋listener側イベントログで再発時は即特定可能）。
+  `Stop-ScheduledTask sidepadd` → `Start-ScheduledTask sidepadd` で復旧
+- **VDDが点いたまま残る**: 切断後10秒はlinger仕様（再接続の高速化）。10秒超えて残るなら
+  `WARN vdd_off incomplete` をログで確認（devcon昇格の問題）
+- **ACCESS_LOST が頻発**: モニタ構成変更・secure desktop遷移（UAC/ロック画面）で正常。自動復帰する
+- iPad側が待ち受けのまま: iPadのSidepadを再起動。統計オーバーレイは**3本指タップ**でトグル
