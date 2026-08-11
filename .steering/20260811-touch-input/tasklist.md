@@ -24,11 +24,17 @@ tracking: #12
   - [x] mock_receiver.py --send-touch-script / verify-touch-inject.ps1（判定は実装から独立に計算・軌跡ベース）
   - [x] pc/build.ps1 PASS＋verify-touch-inject.ps1 ローカルPASS（2026-08-11 K立会実走: 全5目標±0px・カウント4/1/1/0一致。1回目はPSサンプラの~1.5s瞬きで右下のみ偽FAIL→判定器にmax sample gap自己申告を追加）
 
-- [ ] フェーズ3: レビューと受入 (#15)
-  - [ ] レビュー1回（Opus・別コンテキスト・判定器レビュー込み）→必須指摘の修正
-  - [ ] iPad再インストール（K: usbipd bind切替＋接続）→ install-to-ipad.ps1
-  - [ ] K実機受入（タップ/ドラッグ/2本指スクロール/四隅座標）＋E2E 30秒・verify-replug 3回
+- [~] フェーズ3: レビューと受入 (#15)
+  - [x] レビュー1回（Opus・別コンテキスト・判定器レビュー込み）→必須指摘の修正（必須3件+判定器J1-J4全修正・selftest 17/17・ローカル注入検証PASS 全5目標±0px）
+  - [x] iPad再インストール（K: usbipd bind切替＋接続）→ install-to-ipad.ps1（v3・2026-08-11。1回目は既知の間欠失敗→再実行で成功）
+  - [x] K実機受入 基本項目（タップ/1本指移動/2本指スクロール/四隅/3本指トグル 全部OK 2026-08-11。実機カウンタ move=159 tap=10 scroll=235 inject_errors=0）
+  - [ ] E2E 30秒・verify-replug 3回（フェーズ4の再インストールとまとめて実施）
   - [ ] 記録（振り返り・orchestration.md・技術知見はdev/へ）
+
+- [~] フェーズ4: 長押しドラッグ（K実機受入からの追加承認 2026-08-11） (#16)
+  - [ ] iPad側: longPress recognizer＋kind=4/5送信・コーデック拡張・touchwireテスト（G3含む）・WSLビルド
+  - [ ] PC側: kind=4/5注入（LEFTDOWN/UP）・押しっぱなしフェイルセーフ（ReleaseDragIfActive）・drags_カウンタ・selftest拡張
+  - [ ] レビュー（Opus・差分）→修正→再インストール→K受入（長押しでウィンドウ移動/範囲選択・離すと解放・速く動かすと従来のカーソル移動）
 
 ---
 

@@ -14,12 +14,16 @@ import Foundation
 
 /// タッチメッセージの種別。ProbeMessage.touch の payload 先頭バイト。
 enum TouchKind: UInt8 {
-    /// 1本指ドラッグ中のカーソル移動。x,y は絶対位置。
+    /// 1本指ドラッグ中のカーソル移動（左ボタンドラッグ中の移動もこれ）。x,y は絶対位置。
     case move = 1
     /// タップ確定。x,y はタップ位置。
     case tap = 2
     /// 2本指スクロール。x,y は2指の重心、dx,dy は前回からの移動量。
     case scroll = 3
+    /// 長押し確定。x,y で左ボタン押下。2026-08-11 K承認の追加（design.md §1「長押しドラッグ」節）。
+    case dragBegin = 4
+    /// 長押しドラッグ終了。x,y へ移動して左ボタン解放。
+    case dragEnd = 5
 }
 
 /// タッチの発生源。PC側は当面同一扱い（ログ区別のためだけに送る）。
@@ -139,6 +143,18 @@ struct TouchCatcher: UIViewRepresentable {
         scrollPan.delegate = context.coordinator
         view.addGestureRecognizer(scrollPan)
 
+        // 長押しドラッグ（2026-08-11 K承認・design.md §1「長押しドラッグ」節）。
+        // 認識器間の排他はUIKit既定に任せる: 指が静止したまま0.35秒経てばlongPressがbeginし、
+        // pan(1)/tap(1)はfailする。素早く動かせば逆にpanが先に走ってlongPressがfailする
+        // （＝従来のカーソル移動のまま）。よって require(toFail:) 等の明示的な排他指定は不要。
+        let longPress = UILongPressGestureRecognizer(
+            target: context.coordinator, action: #selector(Coordinator.longPressed(_:)))
+        longPress.minimumPressDuration = 0.35
+        longPress.numberOfTouchesRequired = 1
+        longPress.allowedTouchTypes = Self.allowedTypes
+        longPress.delegate = context.coordinator
+        view.addGestureRecognizer(longPress)
+
         return view
     }
 
@@ -195,6 +211,27 @@ struct TouchCatcher: UIViewRepresentable {
                 return
             }
             emit(kind: .move, point: gesture.location(in: view))
+        }
+
+        @objc func longPressed(_ gesture: UILongPressGestureRecognizer) {
+            guard let view else { return }
+            switch gesture.state {
+            case .began:
+                // pan(1)の move と同じレート制限状態を共有する（design.md §1「長押しドラッグ」節:
+                // changed=kind=1 move（8msレート制限共通）。直後のchangedを必ず送れるようリセット）。
+                lastMoveSentAt = 0
+                emit(kind: .dragBegin, point: gesture.location(in: view))
+            case .changed:
+                let now = CACurrentMediaTime()
+                guard now - lastMoveSentAt >= TouchCatcher.minInterval else { return }
+                lastMoveSentAt = now
+                emit(kind: .move, point: gesture.location(in: view))
+            case .ended, .cancelled:
+                // 最終イベントは必ず送る（フェイルセーフ。PC側 ReleaseDragIfActive の前提=dragEnd到達）
+                emit(kind: .dragEnd, point: gesture.location(in: view))
+            default:
+                return
+            }
         }
 
         @objc func scrolled(_ gesture: UIPanGestureRecognizer) {

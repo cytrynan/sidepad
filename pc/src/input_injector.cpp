@@ -87,6 +87,41 @@ void InputInjector::RecordInjectResult(UINT sent, UINT expected) {
     }
 }
 
+bool InputInjector::BeginDragState() {
+    bool expected = false;
+    // compare_exchange_strong: only the false->true caller gets true back;
+    // a concurrent/duplicate dragBegin sees drag_active_ already true and
+    // gets false (design.md fail-safe ①, "dragBegin重複は無視").
+    return drag_active_.compare_exchange_strong(expected, true);
+}
+
+bool InputInjector::EndDragState() {
+    bool expected = true;
+    const bool transitioned = drag_active_.compare_exchange_strong(expected, false);
+    if (transitioned) {
+        // Counts every REAL end -- a genuine dragEnd message or the
+        // ReleaseDragIfActive() fail-safe -- so drags() reflects completed
+        // drags either way, never a message that landed on an already-idle
+        // state.
+        drags_.fetch_add(1, std::memory_order_relaxed);
+    }
+    return transitioned;
+}
+
+void InputInjector::ReleaseDragIfActive() {
+    // Thin SendInput wrapper around the pure state transition above: no
+    // move (Pipeline::Stop() has no touch coordinate to work with at
+    // teardown -- release wherever the cursor already is), just the
+    // LEFTUP that undoes dragBegin's LEFTDOWN.
+    if (EndDragState()) {
+        INPUT in{};
+        in.type = INPUT_MOUSE;
+        in.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+        const UINT sent = SendInput(1, &in, sizeof(INPUT));
+        RecordInjectResult(sent, 1);
+    }
+}
+
 void InputInjector::OnTouch(const TouchMsg& m) {
     RECT target;
     {
@@ -143,6 +178,36 @@ void InputInjector::OnTouch(const TouchMsg& m) {
             const UINT sent = SendInput(expected, ins.data(), sizeof(INPUT));
             RecordInjectResult(sent, expected);
             scrolls_.fetch_add(1, std::memory_order_relaxed);
+            break;
+        }
+        case kTouchDragBegin: {
+            // BeginDragState() is the fail-safe's gate: a duplicate
+            // dragBegin (design.md ①) returns false here and SendInput is
+            // never called, so a double LEFTDOWN can't happen.
+            if (BeginDragState()) {
+                const POINT p = MapToVirtualDesktop(m.x, m.y, target, vscreen);
+                INPUT ins[2]{};
+                ins[0] = MakeMoveInput(p);
+                ins[1].type = INPUT_MOUSE;
+                ins[1].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+                const UINT sent = SendInput(2, ins, sizeof(INPUT));
+                RecordInjectResult(sent, 2);
+            }
+            break;
+        }
+        case kTouchDragEnd: {
+            // EndDragState() false means dragEnd arrived with no matching
+            // begin (already released, or begin was lost) -- nothing to
+            // release, so no SendInput and no double LEFTUP.
+            if (EndDragState()) {
+                const POINT p = MapToVirtualDesktop(m.x, m.y, target, vscreen);
+                INPUT ins[2]{};
+                ins[0] = MakeMoveInput(p);
+                ins[1].type = INPUT_MOUSE;
+                ins[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+                const UINT sent = SendInput(2, ins, sizeof(INPUT));
+                RecordInjectResult(sent, 2);
+            }
             break;
         }
         default:

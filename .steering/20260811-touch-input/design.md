@@ -9,9 +9,11 @@
 
 ```
 [u8 kind][u8 source][u16 x][u16 y][i16 dx][i16 dy]
-kind:   1=move（1本指ドラッグ中のカーソル移動）
+kind:   1=move（1本指ドラッグ中のカーソル移動。左ボタンドラッグ中の移動もこれ）
         2=tap （タップ確定。x,yはタップ位置）
         3=scroll（2本指スクロール。x,yは2指の重心、dx,dyは前回からの移動量）
+        4=dragBegin（長押し確定。x,yで左ボタン押下。2026-08-11 K承認の追加）
+        5=dragEnd  （長押しドラッグ終了。x,yへ移動して左ボタン解放）
 source: 0=finger, 1=pencil（PC側は当面同一扱い。ログ区別のためだけに送る）
 x,y:    0..65535 の正規化座標。iPadのフルスクリーンビュー左上=(0,0)、右下=(65535,65535)
 dx,dy:  スクロール移動量（iPadのポイント単位、符号付き）。kind=3以外は0
@@ -29,8 +31,24 @@ G1 tap:    kind=2 source=0 x=0x1234 y=0xABCD dx=0 dy=0
    wire =  0B 00 00 00 08 02 00 34 12 CD AB 00 00 00 00
 G2 scroll: kind=3 source=1 x=0x8000 y=0x8000 dx=-10 dy=300
    wire =  0B 00 00 00 08 03 01 00 80 00 80 F6 FF 2C 01
+G3 dragBegin: kind=4 source=0 x=0x0001 y=0xFFFE dx=0 dy=0
+   wire =  0B 00 00 00 08 04 00 01 00 FE FF 00 00 00 00
 ```
 （length=0x0000000B=type1+payload10、全てリトルエンディアン）
+
+### 長押しドラッグ（2026-08-11 K承認の追加・実機受入「ドラッグできない」対応）
+
+- iPad: `UILongPressGestureRecognizer(minimumPressDuration: 0.35, numberOfTouchesRequired: 1)` を
+  TouchCatcher の同一ビューに追加。began=dragBegin送信／changed=kind=1 move（8msレート制限共通）／
+  ended・cancelled=dragEnd送信。**UIKit既定の排他に任せる**: 指が静止→longPress beganでpan(1)とtap(1)は
+  fail、以降の移動はlongPressのchangedで届く。早く動かせばpanが先に走りlongPressがfail（従来のカーソル移動）
+- PC: kind=4 → 座標へ move＋LEFTDOWN（1回のSendInputバッチ）／kind=5 → move＋LEFTUP。
+  `drags_` カウンタ追加（CSV・サマリ・verify照合も1列/1項目追加）
+- **フェイルセーフ（correctness）**: 押しっぱなし事故の防止。`InputInjector` に `drag_active_` を持ち、
+  ①dragBegin重複は無視 ②dragEnd未着のまま切断・teardownしたら **Pipeline::Stop() から
+  `injector_.ReleaseDragIfActive()` を呼んで LEFTUP を注入**（左ボタンが押しっぱなしのままPCが
+  操作不能になるのが最悪の故障形。判定器: selftestに「dragBegin→ReleaseDragIfActiveでactiveが落ちる」
+  状態遷移テストを追加。SendInput自体は発火しない形で状態だけ検証）
 
 ## 2. iPad側（Sources/Sidepad/）
 

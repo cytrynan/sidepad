@@ -569,7 +569,7 @@ bool RunSession(const Options& opt, DeviceState& state, VddKeeper& vdd_keeper,
                 GetLocalTime(&st);
                 std::fprintf(csv,
                              "%04u-%02u-%02uT%02u:%02u:%02u,%.2f,%lld,%.2f,"
-                             "%.1f,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld\n",
+                             "%.1f,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld\n",
                              st.wYear, st.wMonth, st.wDay, st.wHour,
                              st.wMinute, st.wSecond, fps, frames, p99,
                              WorkingSetMb(),
@@ -578,7 +578,7 @@ bool RunSession(const Options& opt, DeviceState& state, VddKeeper& vdd_keeper,
                              pipeline.cursor_only_frames(),
                              pipeline.cursor_drawn_frames(),
                              pipeline.touch_moves(), pipeline.touch_taps(),
-                             pipeline.touch_scrolls(),
+                             pipeline.touch_scrolls(), pipeline.touch_drags(),
                              pipeline.touch_inject_errors());
                 std::fflush(csv);
             }
@@ -672,7 +672,7 @@ int main(int argc, char** argv) {
     static const char kCsvHeader[] =
         "time,fps,frames_total,lat_p99_ms,working_set_mb,"
         "drops_input,drops_pool,cursor_only_total,cursor_drawn_total,"
-        "touch_moves,touch_taps,touch_scrolls,inject_errors\n";
+        "touch_moves,touch_taps,touch_scrolls,touch_drags,inject_errors\n";
     // Import-Csv maps values to the FILE's first line, so appending wider
     // rows to a file with an older header would silently drop the new
     // columns. Rotate instead of mixing schemas.

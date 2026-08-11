@@ -45,9 +45,11 @@ def touch_frame(kind: int, source: int, x: int, y: int, dx: int, dy: int) -> byt
     return frame(MSG_TOUCH, TOUCH.pack(kind, source, x, y, dx, dy))
 
 
-# --send-touch-script のスクリプト本体: 四隅move→中央tap→scroll。
+# --send-touch-script のスクリプト本体: 四隅move→中央tap→scroll→長押しドラッグ。
 # 期待座標は pc/probe/verify-touch-inject.ps1 がこの座標から独立に再計算して
 # GetCursorPos と突き合わせる（実装の式を写さない = judge-design.mdの教訓）。
+# dragBegin/dragEndの座標はG3(0x0001,0xFFFE)とは別に、四隅・中央と重ならない
+# 内部の点を2つ選んで軌跡判定を独立させる(2026-08-11 K承認の長押しドラッグ追加)。
 TOUCH_SCRIPT = [
     # kind, source, x,     y,     dx,  dy
     (1,     0,      0,     0,     0,   0),      # move: top-left corner
@@ -56,6 +58,8 @@ TOUCH_SCRIPT = [
     (1,     0,      65535, 65535, 0,   0),      # move: bottom-right corner
     (2,     0,      32767, 32767, 0,   0),      # tap: center
     (3,     1,      32767, 32767, -10, 300),    # scroll: same magnitude as G2
+    (4,     0,      16384, 16384, 0,   0),      # dragBegin: upper-left-ish
+    (5,     0,      49151, 49151, 0,   0),      # dragEnd: lower-right-ish
 ]
 
 # メッセージ間隔（秒）。判定側のサンプリング周期(約20Hz)とのタイミング結合を

@@ -325,6 +325,18 @@ void Pipeline::Start() {
 }
 
 void Pipeline::Stop() {
+    // Fail-safe (design.md section 1 "長押しドラッグ", review 2026-08-11):
+    // release a held left button on every path into Stop() -- detach, send
+    // failure, capture loss, quit, session-limit, suspend -- so a dropped
+    // dragEnd never leaves the PC's left button stuck down (the worst
+    // failure mode: the PC itself becomes unusable). Deliberately placed
+    // BEFORE the started_ guard below: the touch handler is wired in
+    // InitOutputs and the receiver thread can begin a drag before Start()
+    // ever runs, so this must not be skippable by that early return.
+    // Idempotent (EndDragState() no-ops when nothing is active), so the
+    // second Stop() call from ~Pipeline() costs nothing extra.
+    injector_.ReleaseDragIfActive();
+
     if (!started_) return;
     // Same shutdown timeline as the spike: the capture loop ends first (the
     // spike's ran out of its deadline on the main thread), then a 250ms tail

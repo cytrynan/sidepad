@@ -11,17 +11,18 @@
 #      ここで打ち切り、マウスは一切動かさない。
 #   1) mock_receiver.py --send-touch-script を PC 役として起動する。
 #   2) pc_encode_spike --send tcp:127.0.0.1:PORT --seconds N をそれに向けて
-#      走らせる。mock_receiver は接続後、四隅move→中央tap→scroll
+#      走らせる。mock_receiver は接続後、四隅move→中央tap→scroll→
+#      長押しドラッグ(dragBegin→dragEnd、2026-08-11 K承認の追加)
 #      (TOUCH_SCRIPT、mock_receiver.py と同じ座標をこのファイルで定数として
 #      持つ = 実装の式を写さず独立に判定する[judge-design.mdの教訓])を
 #      TOUCH_SCRIPT_INTERVAL_SEC間隔で送る。
 #   3) [J2] 固定タイミングでの単発サンプリングをやめ、実行中ずっと
-#      ~20Hz で GetCursorPos を採取して軌跡を作る。判定は「期待5点
-#      (四隅+中央)に、送信順を保ったまま軌跡上で±2px以内に到達したか」を
-#      軌跡から後追いで判定する(タイミング結合を排除)。
+#      ~20Hz で GetCursorPos を採取して軌跡を作る。判定は「期待7点
+#      (四隅+中央+drag begin/end)に、送信順を保ったまま軌跡上で±2px以内に
+#      到達したか」を軌跡から後追いで判定する(タイミング結合を排除)。
 #   4) [J1] pc_encode_spike の終了時ログ "touch: moves=.. taps=.. scrolls=..
-#      inject_errors=.." を TOUCH_SCRIPT の送信数(move=4/tap=1/scroll=1)と
-#      突き合わせる。
+#      drags=.. inject_errors=.." を TOUCH_SCRIPT の送信数
+#      (move=4/tap=1/scroll=1/drag=1)と突き合わせる。
 #
 # 【重要】手順1)以降はKのマウスカーソルが動く。
 #   絶対に自動実行しない。走らせる前に必ずチャットで一言断ってから、
@@ -99,19 +100,23 @@ Write-Host "`n=== WARNING: the following steps move the mouse cursor. Confirm wi
 # mock_receiver.py の TOUCH_SCRIPT と同じ座標を「値として」ここに複製する
 # (実装コードは一切参照しない)。式は design.md §3-1 の二段変換をこのスクリプト
 # 側で書き下したもので、input_injector.cpp の MapToVirtualDesktop 実装とは
-# 独立に計算する。送信順を保った軌跡照合の対象は四隅+中央の5点
-# (tap/scrollはどちらも中央が目標なので、中央は1つの目標として扱う)。
+# 独立に計算する。送信順を保った軌跡照合の対象は四隅+中央+drag begin/endの
+# 7点(tap/scrollはどちらも中央が目標なので、中央は1つの目標として扱う。
+# drag begin/endはmock_receiver.pyのTOUCH_SCRIPTと同じ座標をここに複製)。
 $Targets = @(
     @{ Name = "top-left";     X = 0;     Y = 0     }
     @{ Name = "top-right";    X = 65535; Y = 0     }
     @{ Name = "bottom-left";  X = 0;     Y = 65535 }
     @{ Name = "bottom-right"; X = 65535; Y = 65535 }
     @{ Name = "center";       X = 32767; Y = 32767 }
+    @{ Name = "drag-begin";   X = 16384; Y = 16384 }
+    @{ Name = "drag-end";     X = 49151; Y = 49151 }
 )
-# TOUCH_SCRIPT の送信数（moves/taps/scrolls）。[J1] の照合対象。
+# TOUCH_SCRIPT の送信数（moves/taps/scrolls/drags）。[J1] の照合対象。
 $ExpectedMoves = 4
 $ExpectedTaps = 1
 $ExpectedScrolls = 1
+$ExpectedDrags = 1
 
 function Get-Display0Rect {
     # DXGIを直接叩く代わりに、pc_encode_spike --list-displays の出力の
@@ -222,18 +227,21 @@ $targetResults | Format-Table -AutoSize
 # --- [J1] 注入カウント照合 ----------------------------------------------------
 $spikeLog = if (Test-Path $spikeStdout) { Get-Content $spikeStdout -Raw } else { "" }
 $countsOk = $false
-$actualMoves = $null; $actualTaps = $null; $actualScrolls = $null; $actualErrors = $null
-if ($spikeLog -match "touch: moves=(\d+) taps=(\d+) scrolls=(\d+) inject_errors=(\d+)") {
+$actualMoves = $null; $actualTaps = $null; $actualScrolls = $null
+$actualDrags = $null; $actualErrors = $null
+if ($spikeLog -match "touch: moves=(\d+) taps=(\d+) scrolls=(\d+) drags=(\d+) inject_errors=(\d+)") {
     $actualMoves = [int]$Matches[1]; $actualTaps = [int]$Matches[2]
-    $actualScrolls = [int]$Matches[3]; $actualErrors = [int]$Matches[4]
+    $actualScrolls = [int]$Matches[3]; $actualDrags = [int]$Matches[4]
+    $actualErrors = [int]$Matches[5]
     $countsOk = ($actualMoves -eq $ExpectedMoves) -and ($actualTaps -eq $ExpectedTaps) -and
-                ($actualScrolls -eq $ExpectedScrolls) -and ($actualErrors -eq 0)
+                ($actualScrolls -eq $ExpectedScrolls) -and ($actualDrags -eq $ExpectedDrags) -and
+                ($actualErrors -eq 0)
     Write-Host "`n=== injection count check ==="
-    Write-Host "expected: moves=$ExpectedMoves taps=$ExpectedTaps scrolls=$ExpectedScrolls inject_errors=0"
-    Write-Host "actual:   moves=$actualMoves taps=$actualTaps scrolls=$actualScrolls inject_errors=$actualErrors"
+    Write-Host "expected: moves=$ExpectedMoves taps=$ExpectedTaps scrolls=$ExpectedScrolls drags=$ExpectedDrags inject_errors=0"
+    Write-Host "actual:   moves=$actualMoves taps=$actualTaps scrolls=$actualScrolls drags=$actualDrags inject_errors=$actualErrors"
 } else {
     Write-Host "`n=== injection count check ==="
-    Write-Host "[FAIL] could not find 'touch: moves=... taps=... scrolls=... inject_errors=...' in pc_encode_spike output ($spikeStdout)"
+    Write-Host "[FAIL] could not find 'touch: moves=... taps=... scrolls=... drags=... inject_errors=...' in pc_encode_spike output ($spikeStdout)"
 }
 
 $allTargetsFound = ($targetResults | Where-Object { -not $_.Found }).Count -eq 0

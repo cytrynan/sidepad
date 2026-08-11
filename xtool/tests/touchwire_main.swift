@@ -23,7 +23,7 @@ func hex(_ data: Data) -> String {
 
 // ---- ラウンドトリップ: 全kind ----
 
-for kind: TouchKind in [.move, .tap, .scroll] {
+for kind: TouchKind in [.move, .tap, .scroll, .dragBegin, .dragEnd] {
     for source: TouchSource in [.finger, .pencil] {
         let event = TouchEvent(kind: kind, source: source, x: 100, y: 200, dx: -5, dy: 5)
         let encoded = TouchWire.encode(event)
@@ -101,6 +101,17 @@ do {
         0x0B, 0x00, 0x00, 0x00, 0x08, 0x03, 0x01, 0x00, 0x80, 0x00, 0x80, 0xF6, 0xFF, 0x2C, 0x01,
     ]
     check(Array(wire) == expected, "G2 scroll ゴールデンバイト列 (got: \(hex(wire)))")
+}
+
+// G3 dragBegin: kind=4 source=0 x=0x0001 y=0xFFFE dx=0 dy=0（2026-08-11 長押しドラッグ追加分）
+// wire = 0B 00 00 00 08 04 00 01 00 FE FF 00 00 00 00
+do {
+    let event = TouchEvent(kind: .dragBegin, source: .finger, x: 0x0001, y: 0xFFFE, dx: 0, dy: 0)
+    let wire = Framing.encode(.touch, TouchWire.encode(event))
+    let expected: [UInt8] = [
+        0x0B, 0x00, 0x00, 0x00, 0x08, 0x04, 0x00, 0x01, 0x00, 0xFE, 0xFF, 0x00, 0x00, 0x00, 0x00,
+    ]
+    check(Array(wire) == expected, "G3 dragBegin ゴールデンバイト列 (got: \(hex(wire)))")
 }
 
 // ---- Framing.drain で G1/G2 を復元できることも確認（送受信の往復を模擬） ----

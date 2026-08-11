@@ -129,6 +129,7 @@ public:
     long long touch_moves() const { return injector_.moves(); }
     long long touch_taps() const { return injector_.taps(); }
     long long touch_scrolls() const { return injector_.scrolls(); }
+    long long touch_drags() const { return injector_.drags(); }
     long long touch_inject_errors() const { return injector_.inject_errors(); }
 
     // --- Post-Stop statistics (see threading contract) ---

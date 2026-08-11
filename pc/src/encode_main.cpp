@@ -205,6 +205,32 @@ int TouchSelfTest() {
                                     m.dx == -10 && m.dy == 300);
     }
     {
+        // G3 dragBegin (design.md section 1, added 2026-08-11 K-approved
+        // long-press drag): wire = 0B 00 00 00 08 04 00 01 00 FE FF 00 00 00 00
+        const uint8_t wire[] = {0x0B, 0x00, 0x00, 0x00, 0x08, 0x04, 0x00, 0x01,
+                                 0x00, 0xFE, 0xFF, 0x00, 0x00, 0x00, 0x00};
+        const uint32_t length = wire[0] | (wire[1] << 8) | (wire[2] << 16) |
+                                (static_cast<uint32_t>(wire[3]) << 24);
+        add("G3 length/type framing", length == 0x0B && wire[4] == 8);
+        TouchMsg m{};
+        const bool parsed = ParseTouchMsg(wire + 5, sizeof(wire) - 5, &m);
+        add("G3 ParseTouchMsg (kind=4 dragBegin)",
+            parsed && m.kind == kTouchDragBegin && m.source == 0 &&
+                m.x == 0x0001 && m.y == 0xFFFE && m.dx == 0 && m.dy == 0);
+    }
+    {
+        // kind=5 (dragEnd) parse smoke test: not a design.md golden (only
+        // dragBegin is pinned there), but ParseTouchMsg has no kind-specific
+        // logic, so this exercises the same field layout with kind=5 for
+        // the "②kind=4/5のパース" requirement explicitly.
+        uint8_t payload[10] = {kTouchDragEnd, 1, 0xFF, 0xC0, 0x00, 0x40, 0, 0, 0, 0};
+        TouchMsg m{};
+        const bool parsed = ParseTouchMsg(payload, sizeof(payload), &m);
+        add("kind=5 (dragEnd) ParseTouchMsg",
+            parsed && m.kind == kTouchDragEnd && m.source == 1 &&
+                m.x == 0xC0FF && m.y == 0x4000 && m.dx == 0 && m.dy == 0);
+    }
+    {
         TouchMsg m{};
         uint8_t buf9[9] = {0}, buf11[11] = {0}, buf10[10] = {0};
         add("ParseTouchMsg rejects size 9", !ParseTouchMsg(buf9, 9, &m));
@@ -274,6 +300,42 @@ int TouchSelfTest() {
         // so a future retune of the constant doesn't false-fail this test).
         add("G2 dy=300 -> VerticalWheelDelta > 0", VerticalWheelDelta(300) > 0);
         add("G2 dx=-10 -> HorizontalWheelDelta > 0", HorizontalWheelDelta(-10) > 0);
+    }
+
+    // --- Long-press drag fail-safe state machine (design.md section 1,
+    // review 2026-08-11 addition) ---------------------------------------
+    // Deliberately calls ONLY BeginDragState()/EndDragState()/DragActive()
+    // -- the pure atomic-only half of the drag machine -- never OnTouch()
+    // or ReleaseDragIfActive() themselves, both of which conditionally call
+    // SendInput. This proves the fail-safe's state transitions without
+    // moving the real cursor or pressing the real left button, per the
+    // task's "SendInput自体は発火しない形で状態だけ検証する" requirement.
+    {
+        InputInjector injector;  // fresh instance, target rect irrelevant here
+        add("drag inactive by default", !injector.DragActive());
+        add("BeginDragState() 1st call transitions inactive->active (would inject LEFTDOWN)",
+            injector.BeginDragState());
+        add("DragActive() true after BeginDragState()", injector.DragActive());
+        add("BeginDragState() duplicate call returns false (design.md fail-safe (1), ignored)",
+            !injector.BeginDragState());
+        add("DragActive() still true after the ignored duplicate", injector.DragActive());
+        add("EndDragState() transitions active->inactive (would inject LEFTUP; this is exactly "
+            "what ReleaseDragIfActive() does before its SendInput call)",
+            injector.EndDragState());
+        add("DragActive() false after EndDragState()", !injector.DragActive());
+        add("EndDragState() with nothing active returns false (no double LEFTUP)",
+            !injector.EndDragState());
+        add("drags() counted exactly 1 completed drag", injector.drags() == 1);
+
+        // Re-arm to prove the SAME state machine is what
+        // ReleaseDragIfActive() (Pipeline::Stop()'s fail-safe call) relies
+        // on -- teardown-while-dragging must clear drag_active_.
+        injector.BeginDragState();
+        add("re-armed: DragActive() true", injector.DragActive());
+        add("EndDragState() drops it again (Pipeline::Stop()'s fail-safe path, state only)",
+            injector.EndDragState());
+        add("DragActive() false after the fail-safe-equivalent release", !injector.DragActive());
+        add("drags() now counts 2 completed drags", injector.drags() == 2);
     }
 
     bool all_pass = true;
@@ -488,9 +550,11 @@ int main(int argc, char** argv) {
         // Touch injection counters (judge fix J1: verify-touch-inject.ps1
         // matches these against the TOUCH_SCRIPT send counts -- coordinate
         // checks alone don't prove the injected-event COUNT is right).
-        std::printf("touch: moves=%lld taps=%lld scrolls=%lld inject_errors=%lld\n",
+        std::printf("touch: moves=%lld taps=%lld scrolls=%lld drags=%lld "
+                    "inject_errors=%lld\n",
                     pipeline.touch_moves(), pipeline.touch_taps(),
-                    pipeline.touch_scrolls(), pipeline.touch_inject_errors());
+                    pipeline.touch_scrolls(), pipeline.touch_drags(),
+                    pipeline.touch_inject_errors());
         if (!pipeline.send_failed()) {
             report_json = sender.RequestReport(/*timeout_ms=*/5000);
         }

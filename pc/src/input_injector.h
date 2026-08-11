@@ -9,9 +9,18 @@
 // listing in design.md section 1, mirrored in ParseTouchMsgTest usage and
 // pc/probe/verify-touch-inject.ps1):
 //   [u8 kind][u8 source][u16 x][u16 y][i16 dx][i16 dy]
-//   kind: 1=move 2=tap 3=scroll   source: 0=finger 1=pencil (unused on PC)
+//   kind: 1=move 2=tap 3=scroll 4=dragBegin 5=dragEnd
+//         source: 0=finger 1=pencil (unused on PC)
 //   x,y : 0..65535 normalized position in the iPad's fullscreen view
 //   dx,dy: scroll delta in iPad points (kind=3 only, otherwise 0)
+//
+// Long-press drag (2026-08-11 K-approved addition, design.md section 1
+// "長押しドラッグ"): kind=4 (dragBegin) presses the left button down at
+// x,y; the drag's own movement then rides on ordinary kind=1 (move)
+// messages -- PC-side OnTouch needs no special handling for that, because
+// MOUSEEVENTF_MOVE alone (no button flags) simply moves the cursor while
+// SendInput's already-down left button state carries the drag. kind=5
+// (dragEnd) releases at x,y.
 //
 // ParseTouchMsg and MapToVirtualDesktop are pure functions on purpose (no
 // Windows API calls, no state) so they can be desk-checked against the
@@ -49,6 +58,8 @@ enum TouchKind : uint8_t {
     kTouchMove = 1,
     kTouchTap = 2,
     kTouchScroll = 3,
+    kTouchDragBegin = 4,
+    kTouchDragEnd = 5,
 };
 
 // Decodes the 10-byte touch payload (the DATA-less part after [length][type
@@ -112,17 +123,54 @@ public:
     // on an unset target.
     void SetTargetRect(RECT desktop_rect);
 
-    // Dispatches on m.kind (move/tap/scroll); unknown kinds are ignored
-    // (forward-compatible with future kinds the PC binary predates).
-    // Called from the receiver thread (see stream_sender.h's threading
-    // contract) -- SendInput is safe to call from any thread.
+    // Dispatches on m.kind (move/tap/scroll/dragBegin/dragEnd); unknown
+    // kinds are ignored (forward-compatible with future kinds the PC binary
+    // predates). Called from the receiver thread (see stream_sender.h's
+    // threading contract) -- SendInput is safe to call from any thread.
     void OnTouch(const TouchMsg& m);
+
+    // --- Long-press drag fail-safe (design.md section 1, review 2026-08-11
+    // finding: a dropped/never-sent dragEnd must not leave the left button
+    // stuck down -- that is the worst failure mode, since it makes the PC
+    // itself unusable). BeginDragState/EndDragState are the PURE state half
+    // of the drag machine: atomic-only, no SendInput, no Windows calls at
+    // all. OnTouch's kTouchDragBegin/kTouchDragEnd cases and
+    // ReleaseDragIfActive() are thin wrappers that call these and only
+    // inject SendInput on a real (non-duplicate) transition. This split
+    // exists so --touch-selftest (pc/src/encode_main.cpp) can prove the
+    // fail-safe's state transitions -- duplicate dragBegin ignored, a drag
+    // release actually clears drag_active_ -- WITHOUT ever calling
+    // SendInput (moving the real cursor), by calling BeginDragState/
+    // EndDragState/DragActive directly instead of going through OnTouch or
+    // ReleaseDragIfActive.
+    //
+    // Returns true iff this call performed a real inactive->active
+    // transition (i.e. the caller should inject LEFTDOWN); false means a
+    // duplicate dragBegin, silently ignored per design.md's fail-safe ①.
+    bool BeginDragState();
+    // Returns true iff this call performed a real active->inactive
+    // transition (i.e. the caller should inject LEFTUP), and counts it in
+    // drags(); false means nothing was active (a dragEnd with no matching
+    // begin, or a redundant release), correctly a no-op.
+    bool EndDragState();
+    bool DragActive() const {
+        return drag_active_.load(std::memory_order_relaxed);
+    }
+    // Fail-safe entry point: call from Pipeline::Stop() so a session that
+    // ends (detach / send failure / quit / session-limit) with a drag still
+    // held never leaves the PC's left button stuck down. Idempotent and
+    // safe to call even when no drag is active (EndDragState() returns
+    // false, no SendInput call happens at all).
+    void ReleaseDragIfActive();
 
     long long moves() const { return moves_.load(std::memory_order_relaxed); }
     long long taps() const { return taps_.load(std::memory_order_relaxed); }
     long long scrolls() const {
         return scrolls_.load(std::memory_order_relaxed);
     }
+    // Completed drags (a real EndDragState() transition, whether from a
+    // genuine dragEnd message or the ReleaseDragIfActive() fail-safe).
+    long long drags() const { return drags_.load(std::memory_order_relaxed); }
     // SendInput() returned fewer events injected than requested. Counted,
     // not logged per-occurrence -- SendInput can fail transiently (e.g. a
     // secure desktop / UAC prompt in focus) and touch is a high-rate stream,
@@ -137,8 +185,11 @@ private:
     std::mutex target_mutex_;
     RECT target_{0, 0, 1, 1};
 
+    std::atomic<bool> drag_active_{false};
+
     std::atomic<long long> moves_{0};
     std::atomic<long long> taps_{0};
     std::atomic<long long> scrolls_{0};
+    std::atomic<long long> drags_{0};
     std::atomic<long long> inject_errors_{0};
 };
