@@ -12,11 +12,11 @@ tracking: #12
 
 ## タスク
 
-- [~] フェーズ1: iPad側（タッチ捕捉→送信） (#13)
-  - [ ] TouchInput.swift（TouchEvent/TouchWire純関数コーデック・TouchCatcher）
-  - [ ] USBTransportClient.sendTouch / ConnectionView配線（receiving時のみ送信・3本指トグル共存）
-  - [ ] 単体テスト touchwire_main.swift（ラウンドトリップ＋ゴールデンバイト列）Windows swiftcでPASS
-  - [ ] WSLビルド（xtool dev build）PASS
+- [x] フェーズ1: iPad側（タッチ捕捉→送信） (#13)
+  - [x] TouchInput.swift（TouchEvent/TouchWire純関数コーデック・TouchCatcher）
+  - [x] USBTransportClient.sendTouch / ConnectionView配線（receiving時のみ送信・3本指トグル共存）
+  - [x] 単体テスト touchwire_main.swift（ラウンドトリップ＋ゴールデンバイト列）Windows swiftcでPASS（annexb回帰もPASS）
+  - [x] WSLビルド（xtool dev build）PASS（2026-08-11 13.8s。注意: `wsl -d Ubuntu-24.04 -u root bash -lc` 必須＝-d無しは既定distroの26.04に入り偽の環境故障に見える・-l無しはswiftがPATHに無い）
 
 - [~] フェーズ2: PC側（受信→SendInput注入） (#14)
   - [ ] input_injector.{h,cpp}（ParseTouchMsg・二段座標変換の純関数・move/tap/scroll注入・カウンタ）

@@ -58,11 +58,17 @@ TOUCH_SCRIPT = [
     (3,     1,      32767, 32767, -10, 300),    # scroll: same magnitude as G2
 ]
 
+# メッセージ間隔（秒）。判定側のサンプリング周期(約20Hz)とのタイミング結合を
+# 避けるため軌跡ベース判定に変更した(judge-design.md J2)。それでも各メッセージ
+# には十分な反応時間を与える(1.0s→1.5s、レビュー2026-08-11 J2)。
+TOUCH_SCRIPT_INTERVAL_SEC = 1.5
+
 
 def send_touch_script(conn: socket.socket, send_lock: threading.Lock,
                        stop_event: threading.Event) -> None:
-    """1秒間隔でTOUCH_SCRIPTを送信するスレッド本体。他のsendall呼び出し
-    (ACK/PONG/REPORT) と同じソケットを使うため send_lock で直列化する。"""
+    """TOUCH_SCRIPT_INTERVAL_SEC間隔でTOUCH_SCRIPTを送信するスレッド本体。
+    他のsendall呼び出し(ACK/PONG/REPORT)と同じソケットを使うため
+    send_lock で直列化する。"""
     for kind, source, x, y, dx, dy in TOUCH_SCRIPT:
         if stop_event.is_set():
             return
@@ -74,7 +80,7 @@ def send_touch_script(conn: socket.socket, send_lock: threading.Lock,
             return  # link already closed; nothing more to do
         print(f"touch-script: sent kind={kind} source={source} x={x} y={y} "
               f"dx={dx} dy={dy}", flush=True)
-        time.sleep(1.0)
+        time.sleep(TOUCH_SCRIPT_INTERVAL_SEC)
     print("touch-script: done (all messages sent)", flush=True)
 
 

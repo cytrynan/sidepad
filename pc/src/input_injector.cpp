@@ -15,15 +15,11 @@ namespace {
 constexpr LONG kWheelPerPoint = 4;
 
 // true = content moves the same direction as the dragging fingers (macOS
-// "natural" scrolling). design.md section 3-1: "指が下(dy>0)ならホイールは
-// 負" -- MOUSEEVENTF_WHEEL's positive delta scrolls content up, so natural
-// scrolling means negating the raw finger delta.
+// "natural" scrolling). See input_injector.h's VerticalWheelDelta /
+// HorizontalWheelDelta doc comment for why the two axes have opposite sign
+// conventions in Win32 (review 2026-08-11 finding 必須2 -- the original
+// single-sign-for-both-axes implementation had vertical scrolling inverted).
 constexpr bool kNaturalScroll = true;
-
-LONG ScrollDeltaFromPoints(int16_t points) {
-    const LONG raw = static_cast<LONG>(points) * kWheelPerPoint;
-    return kNaturalScroll ? -raw : raw;
-}
 
 INPUT MakeMoveInput(POINT p) {
     INPUT in{};
@@ -35,6 +31,20 @@ INPUT MakeMoveInput(POINT p) {
 }
 
 }  // namespace
+
+LONG VerticalWheelDelta(int16_t dy) {
+    // MOUSEEVENTF_WHEEL positive = forward rotation = content moves down.
+    // Natural scroll: finger down (dy>0) -> content down -> positive.
+    const LONG raw = static_cast<LONG>(dy) * kWheelPerPoint;
+    return kNaturalScroll ? raw : -raw;
+}
+
+LONG HorizontalWheelDelta(int16_t dx) {
+    // MOUSEEVENTF_HWHEEL positive = rightward rotation = content moves left.
+    // Natural scroll: finger right (dx>0) -> content right -> negative.
+    const LONG raw = static_cast<LONG>(dx) * kWheelPerPoint;
+    return kNaturalScroll ? -raw : raw;
+}
 
 bool ParseTouchMsg(const uint8_t* payload, size_t size, TouchMsg* out) {
     if (!payload || !out || size != 10) return false;
@@ -118,14 +128,14 @@ void InputInjector::OnTouch(const TouchMsg& m) {
             if (m.dy != 0) {
                 INPUT wi{};
                 wi.type = INPUT_MOUSE;
-                wi.mi.mouseData = static_cast<DWORD>(ScrollDeltaFromPoints(m.dy));
+                wi.mi.mouseData = static_cast<DWORD>(VerticalWheelDelta(m.dy));
                 wi.mi.dwFlags = MOUSEEVENTF_WHEEL;
                 ins.push_back(wi);
             }
             if (m.dx != 0) {
                 INPUT hi{};
                 hi.type = INPUT_MOUSE;
-                hi.mi.mouseData = static_cast<DWORD>(ScrollDeltaFromPoints(m.dx));
+                hi.mi.mouseData = static_cast<DWORD>(HorizontalWheelDelta(m.dx));
                 hi.mi.dwFlags = MOUSEEVENTF_HWHEEL;
                 ins.push_back(hi);
             }

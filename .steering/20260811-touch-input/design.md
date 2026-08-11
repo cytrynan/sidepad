@@ -58,9 +58,13 @@ G2 scroll: kind=3 source=1 x=0x8000 y=0x8000 dx=-10 dy=300
 
 ### 2-3. ConnectionView.swift（変更）
 
-- ZStack の ThreeFingerTapCatcher の**下**（背面側）に `TouchCatcher` を全面で置く
-  （3本指は上のレイヤが先取りする。UIGestureRecognizer は同時認識しないよう
-  TouchCatcher 側の pan に `maximumNumberOfTouches` を厳守させる）
+- **捕捉層は1枚に統合する**（レビュー2026-08-11 必須1で改訂。ZStack の兄弟ビューは
+  hitTest で前面が全タッチを取り、背面のレイヤにはジェスチャが一切届かない＝
+  「背面に置けば3本指が先取り」という初版の前提はUIKitの挙動と不一致）:
+  `TouchCatcher` の同一 UIView に tap(3本指=トグル)・tap(1本指)・pan(1本指)・pan(2本指) の
+  4つの recognizer を全部載せ、`ThreeFingerTapCatcher` は廃止する。
+  tap(1) には `require(toFail: tap3)` を付ける（3本指トグル時の誤クリック防止。
+  タップ確定は指を離した時なので実用上の遅延は生じない）
 - `LinkViewModel` に `func sendTouch(_ e: TouchEvent)`（transport へ委譲）を追加し、
   TouchCatcher のコールバックから呼ぶ。**state == .receiving のときだけ送る**（待ち受け画面での誤送信防止）
 
@@ -87,10 +91,12 @@ G2 scroll: kind=3 source=1 x=0x8000 y=0x8000 dx=-10 dy=300
       仮想スクリーン全体の0..65535を取るため、**target矩形→仮想スクリーンの二段変換が必須**）
     - move: MOUSEEVENTF_MOVE|ABSOLUTE|VIRTUALDESK
     - tap: 移動→LEFTDOWN→LEFTUP の3イベントを1回の `SendInput(3, ...)` で
-    - scroll: 移動（重心へ）→ `dy` を累積し `MOUSEEVENTF_WHEEL`（wheelDelta = 累積pt × 4、
-      **ナチュラル方向: 指が下(dy>0)ならホイールは負（コンテンツが下へ＝上スクロール…ではなく
-      指と同方向にコンテンツ移動）**。実装定数 `kNaturalScroll=true` と `kWheelPerPoint=4` は
-      ファイル冒頭に定数化して後のconfig化に備える）。横は MOUSEEVENTF_HWHEEL（dx、同様）
+    - scroll: 移動（重心へ）→ `MOUSEEVENTF_WHEEL`（wheelDelta = pt × 4）。
+      **ナチュラル方向（指と同方向にコンテンツが動く）の極性は縦横で逆**
+      （レビュー2026-08-11 必須2で確定。初版の本節は自己矛盾していた）:
+      縦 = **+dy×4**（WHEEL正=前方回転=コンテンツは下へ動く。指が下dy>0→コンテンツ下→正）／
+      横 = **−dx×4**（HWHEEL正=右回転=コンテンツは左へ動く。指が右dx>0→コンテンツ右→負）。
+      定数 `kNaturalScroll` と `kWheelPerPoint=4` はファイル冒頭で定数化して後のconfig化に備える
   - 統計: `moves_/taps_/scrolls_` カウンタ（atomic）とアクセサ
 - 注入失敗（SendInput戻り値<イベント数）はカウンタ `inject_errors_` に記録（ログ洪水にしない）
 

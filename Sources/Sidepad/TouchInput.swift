@@ -84,10 +84,17 @@ enum TouchNormalize {
 import SwiftUI
 import UIKit
 
-/// 1本指タップ・1本指ドラッグ(move)・2本指ドラッグ(scroll) を捕捉し、TouchEvent を送出する。
-/// ConnectionView 側で ThreeFingerTapCatcher の背面（3本指は上のレイヤが先取り）に全面配置する。
+/// 1本指タップ・1本指ドラッグ(move)・2本指ドラッグ(scroll)・3本指タップ(統計オーバーレイのトグル)を
+/// 同一UIView上の4つの recognizer で捕捉し、それぞれのコールバックへ送出する。
+///
+/// design.md §2-3（2026-08-11 レビュー必須1で改訂）: ZStack の兄弟ビューは hitTest で前面が全タッチを
+/// 取ってしまい、背面のレイヤにはジェスチャが一切届かない（初版の「背面に置けば3本指が先取り」は
+/// UIKitの挙動と不一致だった）。そのため捕捉層は1枚に統合し、旧 ThreeFingerTapCatcher の役割も
+/// このビューの tap(3本指) recognizer に統合する。
 struct TouchCatcher: UIViewRepresentable {
     let onEvent: (TouchEvent) -> Void
+    /// 3本指タップ時に呼ばれる（旧 ThreeFingerTapCatcher の役割）。
+    let onToggleOverlay: () -> Void
 
     /// move/scroll のレート制限間隔。design.md §2-1: 最小間隔8ms（最終イベントは必ず送る）。
     static let minInterval: TimeInterval = 0.008
@@ -102,10 +109,20 @@ struct TouchCatcher: UIViewRepresentable {
         view.backgroundColor = .clear
         context.coordinator.view = view
 
+        // 3本指タップ = 統計オーバーレイのトグル（旧 ThreeFingerTapCatcher）。
+        // 他の3つより先に生成し、tap(1本指)側の require(toFail:) から参照できるようにする。
+        let tap3 = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.toggled(_:)))
+        tap3.numberOfTouchesRequired = 3
+        tap3.delegate = context.coordinator
+        view.addGestureRecognizer(tap3)
+
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tapped(_:)))
         tap.numberOfTouchesRequired = 1
         tap.allowedTouchTypes = Self.allowedTypes
         tap.delegate = context.coordinator
+        // 3本指トグル時の誤クリック防止（design.md §2-3）。タップ確定は指を離した時なので
+        // 実用上の遅延は生じない。
+        tap.require(toFail: tap3)
         view.addGestureRecognizer(tap)
 
         let movePan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.moved(_:)))
@@ -127,12 +144,14 @@ struct TouchCatcher: UIViewRepresentable {
 
     func updateUIView(_ uiView: UIView, context: Context) {
         context.coordinator.onEvent = onEvent
+        context.coordinator.onToggleOverlay = onToggleOverlay
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(onEvent: onEvent) }
+    func makeCoordinator() -> Coordinator { Coordinator(onEvent: onEvent, onToggleOverlay: onToggleOverlay) }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var onEvent: (TouchEvent) -> Void
+        var onToggleOverlay: () -> Void
         weak var view: UIView?
 
         private var lastTouchType: UITouch.TouchType = .direct
@@ -140,8 +159,9 @@ struct TouchCatcher: UIViewRepresentable {
         private var lastScrollSentAt: TimeInterval = 0
         private var lastScrollTranslation: CGPoint = .zero
 
-        init(onEvent: @escaping (TouchEvent) -> Void) {
+        init(onEvent: @escaping (TouchEvent) -> Void, onToggleOverlay: @escaping () -> Void) {
             self.onEvent = onEvent
+            self.onToggleOverlay = onToggleOverlay
         }
 
         // UIGestureRecognizerDelegate: 各ジェスチャが着地する直前に触れた指の種類を控える
@@ -149,6 +169,10 @@ struct TouchCatcher: UIViewRepresentable {
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
             lastTouchType = touch.type
             return true
+        }
+
+        @objc func toggled(_ gesture: UITapGestureRecognizer) {
+            onToggleOverlay()
         }
 
         @objc func tapped(_ gesture: UITapGestureRecognizer) {

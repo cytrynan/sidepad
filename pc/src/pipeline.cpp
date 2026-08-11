@@ -100,6 +100,19 @@ int DisplayRefreshHz(const wchar_t* device_name) {
 
 Pipeline::~Pipeline() {
     Stop();
+    // Stop() ends capture/drain but does NOT close the transport: the
+    // receiver thread (StreamSender::ReceiverLoop) keeps running until
+    // ~StreamSender, and it calls touch_handler_ -> injector_.OnTouch on
+    // every inbound touch message. injector_ is declared after sender_ in
+    // pipeline.h, so member destruction (reverse declaration order) would
+    // tear injector_ down BEFORE sender_ -- leaving a window where the
+    // still-running receiver thread locks an already-destroyed
+    // InputInjector's mutex if a touch message arrives during teardown
+    // (quit/suspend/session-limit while touch is flowing; review 2026-08-11
+    // finding 必須3). Closing here, before any member destructor runs,
+    // joins the receiver thread first and removes that window without
+    // reordering the members themselves.
+    sender_.Close();
     if (timer_period_raised_) {
         timeEndPeriod(1);
     }

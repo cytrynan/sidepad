@@ -57,6 +57,28 @@ enum TouchKind : uint8_t {
 // is null.
 bool ParseTouchMsg(const uint8_t* payload, size_t size, TouchMsg* out);
 
+// Per-axis wheel delta from a 2-finger drag distance in iPad points.
+// Pure functions (no Windows calls) so the polarity can be self-tested
+// without ever calling SendInput -- see pc_encode_spike's --touch-selftest
+// and pc/probe/verify-touch-inject.ps1.
+//
+// design.md section 3-1 (revised in review 2026-08-11 finding 必須2, the
+// original text was self-contradictory): natural scrolling (content moves
+// the same direction as the dragging fingers) has OPPOSITE sign convention
+// on the two axes, because Win32's own wheel-message polarity is opposite
+// on the two axes:
+//   vertical:   MOUSEEVENTF_WHEEL positive  = forward rotation = content
+//               moves DOWN. Finger down (dy>0) -> content down -> POSITIVE.
+//               VerticalWheelDelta(dy)   == +dy * kWheelPerPoint
+//   horizontal: MOUSEEVENTF_HWHEEL positive = rightward rotation = content
+//               moves LEFT. Finger right (dx>0) -> content right -> NEGATIVE.
+//               HorizontalWheelDelta(dx) == -dx * kWheelPerPoint
+// kNaturalScroll flips both signs together when false (traditional
+// scrolling); kWheelPerPoint and kNaturalScroll are defined at the top of
+// input_injector.cpp.
+LONG VerticalWheelDelta(int16_t dy);
+LONG HorizontalWheelDelta(int16_t dx);
+
 // Two-stage coordinate transform (design.md section 3-1):
 //   1) x,y (0..65535 normalized within the iPad view) -> pixel position
 //      inside `target` (the VDD output's DesktopCoordinates).

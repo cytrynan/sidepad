@@ -13,7 +13,13 @@
 // Usage:
 //   pc_encode_spike [--seconds N] [--bitrate-mbps N] [--output file.h264]
 //                   [--display N] [--send usb[:PORT] | tcp:HOST:PORT]
-//                   [--list-displays]
+//                   [--list-displays] [--touch-selftest]
+//
+// --touch-selftest: protocol/pure-function self-check for the touch input
+// path (.steering/20260811-touch-input/design.md section 3-4, judge fix
+// J4). Never calls SendInput -- safe to run unattended, unlike
+// pc/probe/verify-touch-inject.ps1's full run. Exits before any capture/
+// encode/transport setup, like --list-displays.
 //
 // Run pc_test_source alongside so the desktop actually changes at 60 fps;
 // on an idle desktop the fps/bitrate acceptance checks will fail by design.
@@ -151,6 +157,138 @@ int ListDisplays() {
     return 0;
 }
 
+// --touch-selftest (judge fix J4): the PC-side half of protocol-mismatch
+// detection. The iPad side pins the same golden bytes in
+// xtool/tests/touchwire_main.swift; this pins them here, independently, so
+// a wire-format mismatch between the two implementations shows up as a
+// build-time-adjacent FAIL on either side instead of a silent runtime bug.
+// Only exercises the pure functions in input_injector.h (ParseTouchMsg,
+// MapToVirtualDesktop, VerticalWheelDelta, HorizontalWheelDelta) --
+// SendInput is never called, so this is safe to run unattended.
+int TouchSelfTest() {
+    struct Check {
+        std::string name;
+        bool pass;
+    };
+    std::vector<Check> checks;
+    auto add = [&](const char* name, bool pass) {
+        checks.push_back({name, pass});
+    };
+
+    std::printf("touch self-test (design.md section 1/3-1, no SendInput calls)\n\n");
+
+    // --- G1/G2 golden bytes (design.md section 1) ---------------------------
+    {
+        // wire = 0B 00 00 00 08 02 00 34 12 CD AB 00 00 00 00
+        const uint8_t wire[] = {0x0B, 0x00, 0x00, 0x00, 0x08, 0x02, 0x00, 0x34,
+                                 0x12, 0xCD, 0xAB, 0x00, 0x00, 0x00, 0x00};
+        const uint32_t length = wire[0] | (wire[1] << 8) | (wire[2] << 16) |
+                                (static_cast<uint32_t>(wire[3]) << 24);
+        add("G1 length/type framing", length == 0x0B && wire[4] == 8);
+        TouchMsg m{};
+        const bool parsed = ParseTouchMsg(wire + 5, sizeof(wire) - 5, &m);
+        add("G1 ParseTouchMsg", parsed && m.kind == 2 && m.source == 0 &&
+                                    m.x == 0x1234 && m.y == 0xABCD &&
+                                    m.dx == 0 && m.dy == 0);
+    }
+    {
+        // wire = 0B 00 00 00 08 03 01 00 80 00 80 F6 FF 2C 01
+        const uint8_t wire[] = {0x0B, 0x00, 0x00, 0x00, 0x08, 0x03, 0x01, 0x00,
+                                 0x80, 0x00, 0x80, 0xF6, 0xFF, 0x2C, 0x01};
+        const uint32_t length = wire[0] | (wire[1] << 8) | (wire[2] << 16) |
+                                (static_cast<uint32_t>(wire[3]) << 24);
+        add("G2 length/type framing", length == 0x0B && wire[4] == 8);
+        TouchMsg m{};
+        const bool parsed = ParseTouchMsg(wire + 5, sizeof(wire) - 5, &m);
+        add("G2 ParseTouchMsg", parsed && m.kind == 3 && m.source == 1 &&
+                                    m.x == 0x8000 && m.y == 0x8000 &&
+                                    m.dx == -10 && m.dy == 300);
+    }
+    {
+        TouchMsg m{};
+        uint8_t buf9[9] = {0}, buf11[11] = {0}, buf10[10] = {0};
+        add("ParseTouchMsg rejects size 9", !ParseTouchMsg(buf9, 9, &m));
+        add("ParseTouchMsg rejects size 11", !ParseTouchMsg(buf11, 11, &m));
+        add("ParseTouchMsg rejects null payload", !ParseTouchMsg(nullptr, 10, &m));
+        add("ParseTouchMsg rejects null out", !ParseTouchMsg(buf10, 10, nullptr));
+    }
+
+    // --- MapToVirtualDesktop (design.md section 3-1) -------------------------
+    {
+        // Single-monitor identity case: target == vscreen, so the two-stage
+        // transform round-trips to (x,y) within 1 unit of rounding.
+        RECT r{0, 0, 2732, 2048};
+        struct Case { uint16_t x, y; };
+        Case cases[] = {{0, 0}, {65535, 65535}, {0, 65535}, {65535, 0}, {32767, 32767}};
+        bool ok = true;
+        for (const auto& c : cases) {
+            POINT p = MapToVirtualDesktop(c.x, c.y, r, r);
+            if (std::abs(static_cast<long>(p.x) - static_cast<long>(c.x)) > 1 ||
+                std::abs(static_cast<long>(p.y) - static_cast<long>(c.y)) > 1) {
+                ok = false;
+            }
+        }
+        add("MapToVirtualDesktop identity (single monitor)", ok);
+    }
+    {
+        // Second-monitor offset case: VDD (2732x2048) to the right of a
+        // 1920x1080 primary. Expected values computed independently here
+        // (not copied from input_injector.cpp's formula).
+        RECT target{1920, 0, 1920 + 2732, 2048};
+        RECT vscreen{0, 0, 1920 + 2732, 2048};
+        POINT p_tl = MapToVirtualDesktop(0, 0, target, vscreen);
+        const double expect_tl_x = (1920.0 - 0.0) * 65535.0 / (4652.0 - 1.0);
+        POINT p_br = MapToVirtualDesktop(65535, 65535, target, vscreen);
+        const double expect_br_x = (1920.0 + 2731.0) * 65535.0 / (4652.0 - 1.0);
+        const double expect_br_y = 2047.0 * 65535.0 / (2048.0 - 1.0);
+        const bool ok =
+            std::abs(p_tl.x - static_cast<long>(expect_tl_x + 0.5)) <= 1 &&
+            p_tl.y == 0 &&
+            std::abs(p_br.x - static_cast<long>(expect_br_x + 0.5)) <= 1 &&
+            std::abs(p_br.y - static_cast<long>(expect_br_y + 0.5)) <= 1;
+        add("MapToVirtualDesktop offset (2nd monitor)", ok);
+    }
+    {
+        RECT degenerate{100, 100, 100, 100};
+        RECT vscreen{0, 0, 1920, 1080};
+        POINT p = MapToVirtualDesktop(32767, 32767, degenerate, vscreen);
+        add("MapToVirtualDesktop degenerate rect stays in range",
+            p.x >= 0 && p.x <= 65535 && p.y >= 0 && p.y <= 65535);
+    }
+
+    // --- Wheel polarity sign test (review 2026-08-11 finding 必須2) ---------
+    // Natural scroll: vertical is SAME sign as dy, horizontal is OPPOSITE
+    // sign of dx (Win32's WHEEL/HWHEEL polarity is opposite on the two
+    // axes -- see input_injector.h's doc comment on these two functions).
+    {
+        add("VerticalWheelDelta(+10) > 0 (finger down -> content down)",
+            VerticalWheelDelta(10) > 0);
+        add("VerticalWheelDelta(-10) < 0 (finger up -> content up)",
+            VerticalWheelDelta(-10) < 0);
+        add("HorizontalWheelDelta(+10) < 0 (finger right -> content right)",
+            HorizontalWheelDelta(10) < 0);
+        add("HorizontalWheelDelta(-10) > 0 (finger left -> content left)",
+            HorizontalWheelDelta(-10) > 0);
+        // G2's own dx=-10 dy=300 magnitudes, sign-checked against the
+        // golden values (magnitude is kWheelPerPoint=4 -- not repinned here
+        // so a future retune of the constant doesn't false-fail this test).
+        add("G2 dy=300 -> VerticalWheelDelta > 0", VerticalWheelDelta(300) > 0);
+        add("G2 dx=-10 -> HorizontalWheelDelta > 0", HorizontalWheelDelta(-10) > 0);
+    }
+
+    bool all_pass = true;
+    for (const auto& c : checks) {
+        std::printf("[%s] %s\n", c.pass ? "PASS" : "FAIL", c.name.c_str());
+        all_pass = all_pass && c.pass;
+    }
+    std::printf("\n%s (%zu/%zu checks passed)\n",
+                all_pass ? "ALL PASS" : "SOME FAILED",
+                std::count_if(checks.begin(), checks.end(),
+                              [](const Check& c) { return c.pass; }),
+                checks.size());
+    return all_pass ? 0 : 2;
+}
+
 double Percentile(std::vector<double> v, double p) {
     if (v.empty()) return 0.0;
     std::sort(v.begin(), v.end());
@@ -188,6 +326,7 @@ struct Options {
     // "tcp:HOST:PORT"    = plain TCP (mock receiver / wired-LAN fallback).
     std::string send_target;
     bool list_displays = false;
+    bool touch_selftest = false;
 };
 
 Options ParseArgs(int argc, char** argv) {
@@ -212,6 +351,8 @@ Options ParseArgs(int argc, char** argv) {
             opt.send_target = need_value("--send");
         } else if (std::strcmp(argv[i], "--list-displays") == 0) {
             opt.list_displays = true;
+        } else if (std::strcmp(argv[i], "--touch-selftest") == 0) {
+            opt.touch_selftest = true;
         } else {
             std::fprintf(stderr, "[fatal] unknown arg: %s\n", argv[i]);
             std::exit(1);
@@ -229,6 +370,7 @@ int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     const Options opt = ParseArgs(argc, argv);
     if (opt.list_displays) return ListDisplays();
+    if (opt.touch_selftest) return TouchSelfTest();
 
     Pipeline pipeline;
     std::string err;
@@ -343,6 +485,12 @@ int main(int argc, char** argv) {
                                     : *std::max_element(send_ms.begin(),
                                                         send_ms.end()),
                     sender.acks_received());
+        // Touch injection counters (judge fix J1: verify-touch-inject.ps1
+        // matches these against the TOUCH_SCRIPT send counts -- coordinate
+        // checks alone don't prove the injected-event COUNT is right).
+        std::printf("touch: moves=%lld taps=%lld scrolls=%lld inject_errors=%lld\n",
+                    pipeline.touch_moves(), pipeline.touch_taps(),
+                    pipeline.touch_scrolls(), pipeline.touch_inject_errors());
         if (!pipeline.send_failed()) {
             report_json = sender.RequestReport(/*timeout_ms=*/5000);
         }

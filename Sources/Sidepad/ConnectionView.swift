@@ -129,13 +129,11 @@ struct ConnectionView: View {
                 statsOverlay
             }
 
-            // タッチ→PCカーソル返送の捕捉層。3本指トグルより背面に置き、3本指は上のレイヤに先取りさせる
-            // （design.md §2-3。同一Viewに乗る複数ジェスチャの排他は既定挙動に委ねる。詳細はdesign.md §5）。
-            TouchCatcher { model.sendTouch($0) }
-                .ignoresSafeArea()
-
-            // 3本指タップの捕捉層（最前面・透明）。他に操作可能なUIは無いので全面でよい
-            ThreeFingerTapCatcher { showOverlay.toggle() }
+            // タッチ捕捉層（最前面・透明・全面）。ZStackの兄弟ビューはhitTestで前面が
+            // 全タッチを取ってしまい背面にはジェスチャが届かないため（2026-08-11 レビュー必須1）、
+            // 1本指タップ/ドラッグ・2本指ドラッグ・3本指タップ(旧ThreeFingerTapCatcher)を
+            // すべて同一ビューの recognizer に統合する。design.md §2-3
+            TouchCatcher(onEvent: { model.sendTouch($0) }, onToggleOverlay: { showOverlay.toggle() })
                 .ignoresSafeArea()
         }
         .statusBarHidden()
@@ -256,35 +254,6 @@ struct ConnectionView: View {
         case .receiving:
             return "display"
         }
-    }
-}
-
-/// 3本指タップを捕捉する透明レイヤ。
-/// SwiftUI の TapGesture は指の本数を指定できないため、
-/// UIKit の UITapGestureRecognizer(numberOfTouchesRequired: 3) をラップする。
-private struct ThreeFingerTapCatcher: UIViewRepresentable {
-    let action: () -> Void
-
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView()
-        view.backgroundColor = .clear
-        let tap = UITapGestureRecognizer(
-            target: context.coordinator, action: #selector(Coordinator.fired))
-        tap.numberOfTouchesRequired = 3
-        view.addGestureRecognizer(tap)
-        return view
-    }
-
-    func updateUIView(_ uiView: UIView, context: Context) {
-        context.coordinator.action = action
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
-
-    final class Coordinator: NSObject {
-        var action: () -> Void
-        init(action: @escaping () -> Void) { self.action = action }
-        @objc func fired() { action() }
     }
 }
 
