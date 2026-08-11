@@ -7,9 +7,13 @@ iPad 側 USBTransportClient + LinkStats の受信・集計セマンティクス�
   * ackInterval ごとの ACK、PING→PONG、REPORT_REQUEST→LinkReport 互換 JSON
   * DATA 本体（16B計測ヘッダ除去後）を到着順に --out へ連結
     → PC 側の同時ダンプ .h264 とバイト一致すれば転送無欠損の直接証明
+  * --send-touch-script: type=8 (touch, iPad→PC) を四隅move→中央tap→scroll の
+    順で1秒間隔送信し、PC側 input_injector.cpp をiPad実機なしで駆動する
+    (.steering/20260811-touch-input/design.md §3-4)
 
 使い方:
     python mock_receiver.py --port 7789 --out reassembled.h264
+    python mock_receiver.py --port 7789 --send-touch-script
 接続が切れたら集計を表示して終了する（スクリプト検証向けのワンショット動作）。
 """
 
@@ -20,10 +24,12 @@ import json
 import socket
 import struct
 import sys
+import threading
 import time
 
 HEADER = struct.Struct("<IB")   # length(type+payload), type
-MSG_PING, MSG_PONG, MSG_DATA, MSG_ACK, MSG_RESET, MSG_REPORT_REQUEST, MSG_REPORT = range(1, 8)
+TOUCH = struct.Struct("<BBHHhh")  # kind, source, x, y, dx, dy (design.md §1)
+MSG_PING, MSG_PONG, MSG_DATA, MSG_ACK, MSG_RESET, MSG_REPORT_REQUEST, MSG_REPORT, MSG_TOUCH = range(1, 9)
 
 
 def now_ns() -> int:
@@ -32,6 +38,44 @@ def now_ns() -> int:
 
 def frame(msg_type: int, payload: bytes = b"") -> bytes:
     return HEADER.pack(len(payload) + 1, msg_type) + payload
+
+
+def touch_frame(kind: int, source: int, x: int, y: int, dx: int, dy: int) -> bytes:
+    """type=8 touch メッセージ1件を組み立てる（design.md §1のワイヤ層と同一）。"""
+    return frame(MSG_TOUCH, TOUCH.pack(kind, source, x, y, dx, dy))
+
+
+# --send-touch-script のスクリプト本体: 四隅move→中央tap→scroll。
+# 期待座標は pc/probe/verify-touch-inject.ps1 がこの座標から独立に再計算して
+# GetCursorPos と突き合わせる（実装の式を写さない = judge-design.mdの教訓）。
+TOUCH_SCRIPT = [
+    # kind, source, x,     y,     dx,  dy
+    (1,     0,      0,     0,     0,   0),      # move: top-left corner
+    (1,     0,      65535, 0,     0,   0),      # move: top-right corner
+    (1,     0,      0,     65535, 0,   0),      # move: bottom-left corner
+    (1,     0,      65535, 65535, 0,   0),      # move: bottom-right corner
+    (2,     0,      32767, 32767, 0,   0),      # tap: center
+    (3,     1,      32767, 32767, -10, 300),    # scroll: same magnitude as G2
+]
+
+
+def send_touch_script(conn: socket.socket, send_lock: threading.Lock,
+                       stop_event: threading.Event) -> None:
+    """1秒間隔でTOUCH_SCRIPTを送信するスレッド本体。他のsendall呼び出し
+    (ACK/PONG/REPORT) と同じソケットを使うため send_lock で直列化する。"""
+    for kind, source, x, y, dx, dy in TOUCH_SCRIPT:
+        if stop_event.is_set():
+            return
+        msg = touch_frame(kind, source, x, y, dx, dy)
+        try:
+            with send_lock:
+                conn.sendall(msg)
+        except OSError:
+            return  # link already closed; nothing more to do
+        print(f"touch-script: sent kind={kind} source={source} x={x} y={y} "
+              f"dx={dx} dy={dy}", flush=True)
+        time.sleep(1.0)
+    print("touch-script: done (all messages sent)", flush=True)
 
 
 def percentile(values: list[float], p: float) -> float:
@@ -107,6 +151,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="模擬iPad受信器（ローカル検証用）")
     parser.add_argument("--port", type=int, default=7789)
     parser.add_argument("--out", default="", help="受信フレーム本体の連結先（.h264）")
+    parser.add_argument("--send-touch-script", action="store_true",
+                         help="接続受理後、TOUCH_SCRIPT(四隅move→中央tap→scroll)を"
+                              "1秒間隔で送信する(PC側 input_injector.cpp を"
+                              "iPad実機なしで駆動)")
     args = parser.parse_args()
 
     listener = socket.create_server(("127.0.0.1", args.port))
@@ -118,6 +166,18 @@ def main() -> int:
     out = open(args.out, "wb") if args.out else None
     stats = Stats()
     buffer = bytearray()
+    # ACK/PONG/REPORT の通常応答とtouch-scriptの送信は別スレッドから同じ
+    # ソケットに書くため、send_lock で直列化する(TCPは書き込み単位の
+    # 排他を保証しないので、複数スレッドの sendall が交互に割り込むと
+    # ワイヤが破損しうる)。
+    send_lock = threading.Lock()
+    stop_event = threading.Event()
+    touch_thread: threading.Thread | None = None
+    if args.send_touch_script:
+        touch_thread = threading.Thread(
+            target=send_touch_script, args=(conn, send_lock, stop_event),
+            daemon=True)
+        touch_thread.start()
 
     try:
         while True:
@@ -138,21 +198,29 @@ def main() -> int:
                 if msg_type == MSG_DATA and len(payload) >= 16:
                     seq, send_ns = struct.unpack_from("<QQ", payload)
                     if stats.ingest(seq, send_ns, len(payload) + 5, recv_ns):
-                        conn.sendall(frame(MSG_ACK, struct.pack("<QQ", seq, recv_ns)))
+                        with send_lock:
+                            conn.sendall(frame(MSG_ACK, struct.pack("<QQ", seq, recv_ns)))
                     if out:
                         out.write(payload[16:])
                 elif msg_type == MSG_PING and len(payload) >= 16:
-                    conn.sendall(frame(MSG_PONG, payload[:16] + struct.pack("<Q", now_ns())))
+                    with send_lock:
+                        conn.sendall(frame(MSG_PONG, payload[:16] + struct.pack("<Q", now_ns())))
                 elif msg_type == MSG_RESET:
                     interval = struct.unpack_from("<I", payload)[0] if len(payload) >= 4 else 16
                     label = payload[4:].decode("utf-8", "replace")
                     stats.reset(label, interval)
                     print(f"reset: label={label!r} ackInterval={interval}", flush=True)
                 elif msg_type == MSG_REPORT_REQUEST:
-                    conn.sendall(frame(MSG_REPORT, json.dumps(stats.report()).encode()))
+                    with send_lock:
+                        conn.sendall(frame(MSG_REPORT, json.dumps(stats.report()).encode()))
+                # MSG_TOUCH: iPad -> PC専用。このスクリプトはPC役ではないので
+                # 受信しても捨てる(送るだけ)。
     except (ConnectionError, OSError) as exc:
         print(f"connection error: {exc}", file=sys.stderr)
     finally:
+        stop_event.set()
+        if touch_thread:
+            touch_thread.join(timeout=2.0)
         if out:
             out.close()
         conn.close()

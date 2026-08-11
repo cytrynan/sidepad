@@ -87,6 +87,15 @@ final class USBTransportClient: TransportClient, @unchecked Sendable {
         }
     }
 
+    /// タッチイベントをPCへ送る。TouchCatcher からのコールバックで呼ばれる想定。
+    /// 未接続なら黙って捨てる（touchは損失許容。design.md §2-2）。
+    func sendTouch(_ event: TouchEvent) {
+        queue.async { [self] in
+            guard let connection else { return }
+            send(.touch, TouchWire.encode(event), on: connection)
+        }
+    }
+
     func stop() {
         queue.async { [self] in
             connection?.cancel()
@@ -218,7 +227,7 @@ final class USBTransportClient: TransportClient, @unchecked Sendable {
                 log(String(format: "report: %.1f MB/s p99+%.2fms", report.throughputMBps, report.owdExcessP99Ms))
                 onSnapshot?(stats.snapshot())
 
-            case .pong, .ack, .report:
+            case .pong, .ack, .report, .touch:
                 break  // これらは iPad→PC 方向。受け取ることはない。
             }
         }

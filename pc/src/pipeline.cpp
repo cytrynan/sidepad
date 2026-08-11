@@ -202,6 +202,13 @@ bool Pipeline::InitCapture(UINT display_index, std::string* error) {
     LARGE_INTEGER qpc_freq{};
     QueryPerformanceFrequency(&qpc_freq);
     qpc_freq_ = qpc_freq.QuadPart;
+
+    // The touch coordinate map targets this output's screen rect. Done here
+    // (not InitOutputs) so it stays correct even if InitCapture is called
+    // again after a native-mode switch (daemon_main.cpp's
+    // EnsureVddNativeMode re-finds the output and re-InitCaptures with the
+    // post-switch DesktopCoordinates -- design.md section 3-3).
+    injector_.SetTargetRect(output_desc_.DesktopCoordinates);
     return true;
 }
 
@@ -225,6 +232,17 @@ bool Pipeline::InitOutputs(const std::string& dump_path,
         }
     }
     if (!send_target.empty()) {
+        // Registered before Connect*: stream_sender.h's contract requires
+        // the touch handler to be set before a live connection exists. The
+        // handler itself just decodes the payload and hands it to the
+        // injector -- ParseTouchMsg's exact-10-bytes check silently drops
+        // anything malformed instead of injecting garbage input.
+        sender_.SetTouchHandler([this](const uint8_t* payload, size_t size) {
+            TouchMsg msg;
+            if (ParseTouchMsg(payload, size, &msg)) {
+                injector_.OnTouch(msg);
+            }
+        });
         bool ok = false;
         std::string err;
         if (send_target.rfind("usb", 0) == 0) {

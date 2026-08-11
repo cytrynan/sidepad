@@ -81,6 +81,13 @@ final class LinkViewModel: ObservableObject {
         UIApplication.shared.isIdleTimerDisabled = true  // 受信中に画面が消えると表示も止まる
     }
 
+    /// TouchCatcher からのコールバックで呼ぶ。待ち受け画面での誤送信防止のため
+    /// 受信中(.receiving)のときだけ transport へ委譲する（design.md §2-3）。
+    func sendTouch(_ event: TouchEvent) {
+        guard state == .receiving else { return }
+        transport.sendTouch(event)
+    }
+
     private func append(_ message: String) {
         logs.append(message)
         if logs.count > 12 { logs.removeFirst(logs.count - 12) }
@@ -121,6 +128,11 @@ struct ConnectionView: View {
             } else if showOverlay {
                 statsOverlay
             }
+
+            // タッチ→PCカーソル返送の捕捉層。3本指トグルより背面に置き、3本指は上のレイヤに先取りさせる
+            // （design.md §2-3。同一Viewに乗る複数ジェスチャの排他は既定挙動に委ねる。詳細はdesign.md §5）。
+            TouchCatcher { model.sendTouch($0) }
+                .ignoresSafeArea()
 
             // 3本指タップの捕捉層（最前面・透明）。他に操作可能なUIは無いので全面でよい
             ThreeFingerTapCatcher { showOverlay.toggle() }

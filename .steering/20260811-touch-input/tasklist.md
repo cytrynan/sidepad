@@ -12,13 +12,13 @@ tracking: #12
 
 ## タスク
 
-- [ ] フェーズ1: iPad側（タッチ捕捉→送信） (#13)
+- [~] フェーズ1: iPad側（タッチ捕捉→送信） (#13)
   - [ ] TouchInput.swift（TouchEvent/TouchWire純関数コーデック・TouchCatcher）
   - [ ] USBTransportClient.sendTouch / ConnectionView配線（receiving時のみ送信・3本指トグル共存）
   - [ ] 単体テスト touchwire_main.swift（ラウンドトリップ＋ゴールデンバイト列）Windows swiftcでPASS
   - [ ] WSLビルド（xtool dev build）PASS
 
-- [ ] フェーズ2: PC側（受信→SendInput注入） (#14)
+- [~] フェーズ2: PC側（受信→SendInput注入） (#14)
   - [ ] input_injector.{h,cpp}（ParseTouchMsg・二段座標変換の純関数・move/tap/scroll注入・カウンタ）
   - [ ] stream_sender SetTouchHandler / pipeline・daemon配線・stats.csv 4列追加
   - [ ] mock_receiver.py --send-touch-script / verify-touch-inject.ps1（判定は実装から独立に計算）

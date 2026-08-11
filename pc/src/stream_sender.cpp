@@ -21,6 +21,7 @@ constexpr uint8_t kMsgAck = 4;
 constexpr uint8_t kMsgReset = 5;
 constexpr uint8_t kMsgReportRequest = 6;
 constexpr uint8_t kMsgReport = 7;
+constexpr uint8_t kMsgTouch = 8;  // iPad -> PC only (ProbeProtocol.swift)
 
 constexpr size_t kSendChunkBytes = 16 * 1024;  // probe's best write size
 constexpr uint16_t kUsbmuxdPort = 27015;       // AMDS listener on Windows
@@ -400,6 +401,10 @@ void StreamSender::ReceiverLoop() {
                     length - 1);
                 report_ready_ = true;
                 report_cv_.notify_all();
+            } else if (type == kMsgTouch) {
+                if (touch_handler_) {
+                    touch_handler_(buffer.data() + off + 5, length - 1);
+                }
             }
             // kMsgPong and anything else: drained and ignored (we send no pings).
             off += total;

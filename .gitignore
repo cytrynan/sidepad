@@ -47,4 +47,7 @@ DerivedData/
 !/xtool/install-to-ipad.ps1
 !/xtool/build-grab-ipa.sh
 !/xtool/chunked_install.py
+!/xtool/tests/
+!/xtool/run-annexb-tests.sh
+!/xtool/run-touchwire-tests.sh
 

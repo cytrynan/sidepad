@@ -22,7 +22,7 @@ add_executable(pc_test_source src/testsource.cpp)
 # driver and is loaded dynamically, so no AMF import library is linked.
 add_executable(pc_encode_spike src/encode_main.cpp src/pipeline.cpp
                                src/amf_encoder.cpp src/stream_sender.cpp
-                               src/cursor_compositor.cpp)
+                               src/cursor_compositor.cpp src/input_injector.cpp)
 target_include_directories(pc_encode_spike PRIVATE third_party/AMF/include)
 # winmm: timeBeginPeriod / ws2_32: StreamSender (usbmux + TCP transport)
 # d3dcompiler: CursorCompositor's runtime-compiled blend shaders
@@ -34,7 +34,7 @@ target_link_libraries(pc_encode_spike PRIVATE winmm ws2_32 d3dcompiler)
 add_executable(sidepadd src/daemon_main.cpp src/pipeline.cpp
                         src/amf_encoder.cpp src/stream_sender.cpp
                         src/usbmux_events.cpp src/vdd_control.cpp
-                        src/cursor_compositor.cpp)
+                        src/cursor_compositor.cpp src/input_injector.cpp)
 target_include_directories(sidepadd PRIVATE third_party/AMF/include)
 target_link_libraries(sidepadd PRIVATE winmm ws2_32 d3dcompiler)
 

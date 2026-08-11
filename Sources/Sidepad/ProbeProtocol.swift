@@ -28,6 +28,9 @@ enum ProbeMessage: UInt8 {
     case reportRequest = 6
     /// iPad→PC: 集計結果。payload = UTF-8 JSON
     case report = 7
+    /// iPad→PC専用: タッチ入力。payload = [u8 kind][u8 source][u16 x][u16 y][i16 dx][i16 dy]（10バイト固定）。
+    /// 詳細は .steering/20260811-touch-input/design.md §1・TouchInput.swift。
+    case touch = 8
 }
 
 enum Framing {
@@ -85,6 +88,12 @@ extension Data {
         }
     }
 
+    mutating func append(littleEndian value: UInt16) {
+        for i in 0 ..< 2 {
+            append(UInt8(truncatingIfNeeded: value >> (8 * UInt16(i))))
+        }
+    }
+
     /// offset は「このData先頭からの相対位置」。スライスでも安全に読めるよう startIndex を足す。
     func readUInt32(at offset: Int) -> UInt32 {
         let start = startIndex + offset
@@ -103,10 +112,24 @@ extension Data {
         }
         return v
     }
+
+    func readUInt16(at offset: Int) -> UInt16 {
+        let start = startIndex + offset
+        var v: UInt16 = 0
+        for i in 0 ..< 2 {
+            v |= UInt16(self[start + i]) << (8 * UInt16(i))
+        }
+        return v
+    }
 }
 
+// NOTE: clock_gettime_nsec_np は Darwin 専用API。#if で囲むのは、この関数と同じファイルの
+// Framing/バイトヘルパを touchwire_main.swift のクロスプラットフォーム単体テスト（Windows/WSL
+// swiftc）に連結コンパイルできるようにするため（2026-08-11 実測。挙動はAppleプラットフォームで不変）。
+#if canImport(Darwin)
 /// 単調増加クロック（ns）。日時の補正や再起動の影響を受けない。
 @inline(__always)
 func monotonicNanoseconds() -> UInt64 {
     clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
 }
+#endif

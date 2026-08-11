@@ -30,6 +30,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -59,6 +60,18 @@ public:
     // Empty string on timeout/error.
     std::string RequestReport(int timeout_ms);
 
+    // Registers the callback ReceiverLoop invokes for type=8 (touch, iPad ->
+    // PC) frames: handler(payload, size) with the raw 10-byte payload (see
+    // input_injector.h for the layout). Called on the receiver thread --
+    // handlers must be cheap and thread-safe on their own (SendInput is,
+    // which is the only caller today; see input_injector.h). Not
+    // thread-safe to call concurrently with a live connection; set it
+    // before Connect* like the rest of this class's single-controlling-
+    // thread setup.
+    void SetTouchHandler(std::function<void(const uint8_t*, size_t)> handler) {
+        touch_handler_ = std::move(handler);
+    }
+
     void Close();
 
     bool connected() const { return sock_ != INVALID_SOCKET; }
@@ -86,6 +99,8 @@ private:
     std::condition_variable report_cv_;
     std::string report_json_;
     bool report_ready_ = false;
+
+    std::function<void(const uint8_t*, size_t)> touch_handler_;
 };
 
 // Monotonic nanoseconds from QPC. Only differences ever cross the wire

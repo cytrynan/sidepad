@@ -40,6 +40,7 @@
 
 #include "amf_encoder.h"
 #include "cursor_compositor.h"
+#include "input_injector.h"
 #include "stream_sender.h"
 
 // Current refresh rate of a GDI display device (e.g. L"\\\\.\\DISPLAY3");
@@ -119,6 +120,17 @@ public:
     }
     long long cursor_drawn_frames() const { return cursor_.drawn(); }
 
+    // Touch injection counters (InputInjector; see input_injector.h).
+    // Cumulative across the process lifetime -- unlike the frame counters
+    // above they are not reset per Start(), because touch messages can
+    // arrive on the receiver thread even between sessions (e.g. right after
+    // a reconnect, before Start() runs) and the daemon's CSV wants a
+    // monotonic count either way.
+    long long touch_moves() const { return injector_.moves(); }
+    long long touch_taps() const { return injector_.taps(); }
+    long long touch_scrolls() const { return injector_.scrolls(); }
+    long long touch_inject_errors() const { return injector_.inject_errors(); }
+
     // --- Post-Stop statistics (see threading contract) ---
     // Empty string = no fatal error. Formatted exactly like the spike's
     // stderr lines (including the "[fatal] ..." prefix) so the CLI can
@@ -161,6 +173,7 @@ private:
     AmfEncoder encoder_;
     StreamSender sender_;
     FILE* dump_ = nullptr;
+    InputInjector injector_;
 
     // Threads
     std::thread capture_thread_;
