@@ -87,39 +87,50 @@ void InputInjector::RecordInjectResult(UINT sent, UINT expected) {
     }
 }
 
-bool InputInjector::BeginDragState() {
-    bool expected = false;
-    // compare_exchange_strong: only the false->true caller gets true back;
-    // a concurrent/duplicate dragBegin sees drag_active_ already true and
-    // gets false (design.md fail-safe ①, "dragBegin重複は無視").
-    return drag_active_.compare_exchange_strong(expected, true);
-}
-
-bool InputInjector::EndDragState() {
-    bool expected = true;
-    const bool transitioned = drag_active_.compare_exchange_strong(expected, false);
-    if (transitioned) {
-        // Counts every REAL end -- a genuine dragEnd message or the
-        // ReleaseDragIfActive() fail-safe -- so drags() reflects completed
-        // drags either way, never a message that landed on an already-idle
-        // state.
+bool InputInjector::TransitionDragLocked(bool begin,
+                                          const std::function<bool()>& inject) {
+    std::lock_guard<std::mutex> lock(drag_mutex_);
+    if (drag_active_ == begin) {
+        // begin==true and already active: duplicate dragBegin, ignored
+        // (design.md fail-safe ①). begin==false and already inactive:
+        // dragEnd with no matching begin, or a redundant release -- also a
+        // correct no-op. Either way `inject` is never called: no SendInput
+        // for a message that shouldn't cause one.
+        return false;
+    }
+    drag_active_ = begin;  // tentative transition, still holding drag_mutex_
+    if (!inject()) {
+        // 必須3: injection under-delivered (sent < expected). Roll back to
+        // the pre-call state so the fail-safe stays armed/retryable instead
+        // of silently disarming -- a failed LEFTUP must leave drag_active_
+        // true (still holding drag_mutex_, so no other thread can observe
+        // the transient wrong state in between).
+        drag_active_ = !begin;
+        return false;
+    }
+    if (!begin) {
+        // Counts every REAL, SUCCESSFUL end -- a genuine dragEnd message or
+        // the ReleaseDragIfActive() fail-safe -- so drags() reflects
+        // completed drags either way.
         drags_.fetch_add(1, std::memory_order_relaxed);
     }
-    return transitioned;
+    return true;
 }
 
 void InputInjector::ReleaseDragIfActive() {
-    // Thin SendInput wrapper around the pure state transition above: no
-    // move (Pipeline::Stop() has no touch coordinate to work with at
-    // teardown -- release wherever the cursor already is), just the
-    // LEFTUP that undoes dragBegin's LEFTDOWN.
-    if (EndDragState()) {
+    // No move (Pipeline::Stop() has no touch coordinate to work with at
+    // teardown -- release wherever the cursor already is), just the LEFTUP
+    // that undoes dragBegin's LEFTDOWN. Runs inside TransitionDragLocked's
+    // critical section (必須1), so this can never interleave with a
+    // concurrent OnTouch dragBegin/dragEnd on the receiver thread.
+    TransitionDragLocked(/*begin=*/false, [this] {
         INPUT in{};
         in.type = INPUT_MOUSE;
         in.mi.dwFlags = MOUSEEVENTF_LEFTUP;
         const UINT sent = SendInput(1, &in, sizeof(INPUT));
         RecordInjectResult(sent, 1);
-    }
+        return sent == 1;
+    });
 }
 
 void InputInjector::OnTouch(const TouchMsg& m) {
@@ -181,10 +192,13 @@ void InputInjector::OnTouch(const TouchMsg& m) {
             break;
         }
         case kTouchDragBegin: {
-            // BeginDragState() is the fail-safe's gate: a duplicate
-            // dragBegin (design.md ①) returns false here and SendInput is
-            // never called, so a double LEFTDOWN can't happen.
-            if (BeginDragState()) {
+            // TransitionDragLocked's own check is the fail-safe's gate: a
+            // duplicate dragBegin (design.md ①) makes `inject` never run at
+            // all, so a double LEFTDOWN can't happen. State-set and
+            // SendInput happen inside the SAME critical section (必須1) --
+            // a concurrent Pipeline::Stop()->ReleaseDragIfActive() cannot
+            // observe or act on a half-updated state.
+            TransitionDragLocked(/*begin=*/true, [&] {
                 const POINT p = MapToVirtualDesktop(m.x, m.y, target, vscreen);
                 INPUT ins[2]{};
                 ins[0] = MakeMoveInput(p);
@@ -192,14 +206,17 @@ void InputInjector::OnTouch(const TouchMsg& m) {
                 ins[1].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
                 const UINT sent = SendInput(2, ins, sizeof(INPUT));
                 RecordInjectResult(sent, 2);
-            }
+                return sent == 2;  // 必須3: false rolls drag_active_ back
+            });
             break;
         }
         case kTouchDragEnd: {
-            // EndDragState() false means dragEnd arrived with no matching
-            // begin (already released, or begin was lost) -- nothing to
-            // release, so no SendInput and no double LEFTUP.
-            if (EndDragState()) {
+            // "nothing active" (dragEnd with no matching begin, or already
+            // released) makes `inject` never run: no SendInput, no double
+            // LEFTUP. A failed LEFTUP (sent != 2) rolls drag_active_ back
+            // to true (必須3) so a later dragEnd/ReleaseDragIfActive can
+            // still retry instead of the fail-safe being silently disarmed.
+            TransitionDragLocked(/*begin=*/false, [&] {
                 const POINT p = MapToVirtualDesktop(m.x, m.y, target, vscreen);
                 INPUT ins[2]{};
                 ins[0] = MakeMoveInput(p);
@@ -207,7 +224,8 @@ void InputInjector::OnTouch(const TouchMsg& m) {
                 ins[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
                 const UINT sent = SendInput(2, ins, sizeof(INPUT));
                 RecordInjectResult(sent, 2);
-            }
+                return sent == 2;
+            });
             break;
         }
         default:

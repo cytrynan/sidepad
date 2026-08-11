@@ -42,6 +42,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 
 // One decoded touch message (see the wire layout above).
@@ -129,38 +130,36 @@ public:
     // threading contract) -- SendInput is safe to call from any thread.
     void OnTouch(const TouchMsg& m);
 
-    // --- Long-press drag fail-safe (design.md section 1, review 2026-08-11
-    // finding: a dropped/never-sent dragEnd must not leave the left button
-    // stuck down -- that is the worst failure mode, since it makes the PC
-    // itself unusable). BeginDragState/EndDragState are the PURE state half
-    // of the drag machine: atomic-only, no SendInput, no Windows calls at
-    // all. OnTouch's kTouchDragBegin/kTouchDragEnd cases and
-    // ReleaseDragIfActive() are thin wrappers that call these and only
-    // inject SendInput on a real (non-duplicate) transition. This split
-    // exists so --touch-selftest (pc/src/encode_main.cpp) can prove the
-    // fail-safe's state transitions -- duplicate dragBegin ignored, a drag
-    // release actually clears drag_active_ -- WITHOUT ever calling
-    // SendInput (moving the real cursor), by calling BeginDragState/
-    // EndDragState/DragActive directly instead of going through OnTouch or
-    // ReleaseDragIfActive.
+    // --- Long-press drag fail-safe (design.md section 1; review 2026-08-11
+    // findings 必須1/必須3) ----------------------------------------------
     //
-    // Returns true iff this call performed a real inactive->active
-    // transition (i.e. the caller should inject LEFTDOWN); false means a
-    // duplicate dragBegin, silently ignored per design.md's fail-safe ①.
-    bool BeginDragState();
-    // Returns true iff this call performed a real active->inactive
-    // transition (i.e. the caller should inject LEFTUP), and counts it in
-    // drags(); false means nothing was active (a dragEnd with no matching
-    // begin, or a redundant release), correctly a no-op.
-    bool EndDragState();
-    bool DragActive() const {
-        return drag_active_.load(std::memory_order_relaxed);
+    // A dropped/never-sent dragEnd must not leave the left button stuck
+    // down -- the worst failure mode, since it makes the PC itself
+    // unusable. Two hazards had to be closed; see TransitionDragLocked()'s
+    // doc comment (private section below) for the full explanation of
+    // both. This TestTransitionDrag() entry point exists purely so
+    // --touch-selftest (pc/src/encode_main.cpp) can drive that SAME locked
+    // state machine -- transitions AND the failure/rollback path -- with
+    // `simulated_success` standing in for a real SendInput's result,
+    // proving the fail-safe's logic without a single SendInput call. Never
+    // used by OnTouch or ReleaseDragIfActive themselves -- those always
+    // inject for real.
+    bool TestTransitionDrag(bool begin, bool simulated_success) {
+        return TransitionDragLocked(begin, [simulated_success] { return simulated_success; });
     }
-    // Fail-safe entry point: call from Pipeline::Stop() so a session that
-    // ends (detach / send failure / quit / session-limit) with a drag still
-    // held never leaves the PC's left button stuck down. Idempotent and
-    // safe to call even when no drag is active (EndDragState() returns
-    // false, no SendInput call happens at all).
+
+    bool DragActive() const {
+        std::lock_guard<std::mutex> lock(drag_mutex_);
+        return drag_active_;
+    }
+    // Fail-safe entry point: call from Pipeline::Stop() (and once more from
+    // ~Pipeline() after the receiver thread is fully joined -- see
+    // pipeline.cpp) so a session that ends (detach / send failure / quit /
+    // session-limit) with a drag still held never leaves the PC's left
+    // button stuck down. Idempotent and safe to call even when no drag is
+    // active (TransitionDragLocked sees nothing to end, no SendInput call
+    // happens at all). Safe to call repeatedly even after a failed release
+    // (必須3): the state stays active until a release actually succeeds.
     void ReleaseDragIfActive();
 
     long long moves() const { return moves_.load(std::memory_order_relaxed); }
@@ -168,8 +167,10 @@ public:
     long long scrolls() const {
         return scrolls_.load(std::memory_order_relaxed);
     }
-    // Completed drags (a real EndDragState() transition, whether from a
-    // genuine dragEnd message or the ReleaseDragIfActive() fail-safe).
+    // Completed drags (a real, successful TransitionDragLocked(begin=false,
+    // ...) transition, whether from a genuine dragEnd message or the
+    // ReleaseDragIfActive() fail-safe). A failed release (必須3) is NOT
+    // counted here -- it rolls back and stays retryable instead.
     long long drags() const { return drags_.load(std::memory_order_relaxed); }
     // SendInput() returned fewer events injected than requested. Counted,
     // not logged per-occurrence -- SendInput can fail transiently (e.g. a
@@ -180,12 +181,59 @@ public:
     }
 
 private:
+    // A dropped/never-sent dragEnd must not leave the left button stuck
+    // down -- the worst failure mode, since it makes the PC itself
+    // unusable. Two hazards had to be closed:
+    //
+    //   必須1 (non-atomic state+injection): an earlier version did the
+    //   drag_active_ compare-exchange and the SendInput call as two
+    //   separate steps. That let OnTouch's dragBegin (CAS succeeds ->
+    //   about to call SendInput(LEFTDOWN)) race against a concurrent
+    //   Pipeline::Stop() -> ReleaseDragIfActive() on another thread: the
+    //   release could run in the gap and see drag_active_ already back to
+    //   false, so it skips LEFTUP -- while the real LEFTDOWN still lands a
+    //   moment later. Result: physical button down, drag_active_ == false,
+    //   nobody left to release it. Fixed here by holding drag_mutex_
+    //   across BOTH the state check/set AND the injection callback, for
+    //   all three entry points (OnTouch's dragBegin, OnTouch's dragEnd,
+    //   ReleaseDragIfActive) -- they cannot interleave with each other.
+    //
+    //   必須3 (injection failure disarms the fail-safe): if SendInput
+    //   under-delivers (sent < expected) on the release side, the old code
+    //   still flipped drag_active_ to false first, so a real LEFTUP
+    //   failure left the button down but the fail-safe "off" --
+    //   unrecoverable, no retry. This now rolls the tentative transition
+    //   back (drag_active_ reverts to its pre-call value) whenever the
+    //   injection callback reports failure, so the SAME dragEnd retry or a
+    //   later ReleaseDragIfActive() call can still see drag_active_ == true
+    //   and try again.
+    //
+    // Parameterized on the injection step (a callable, not a hardcoded
+    // SendInput call) so --touch-selftest can drive this exact state
+    // machine -- including the failure/rollback path -- through the public
+    // TestTransitionDrag() wrapper, with zero SendInput calls.
+    //
+    // `begin`: true = dragBegin direction (inactive->active), false =
+    // dragEnd/ReleaseDragIfActive direction (active->inactive).
+    // `inject`: called ONLY when a real transition is happening (skips
+    // duplicate-begin / nothing-to-end automatically, so SendInput is never
+    // called for a no-op) with drag_mutex_ held; must return true iff the
+    // injection fully succeeded (sent == expected). Returns true iff a
+    // real, successful transition happened (state committed); false for
+    // either "nothing to do" or "injection failed and was rolled back".
+    bool TransitionDragLocked(bool begin, const std::function<bool()>& inject);
+
     void RecordInjectResult(UINT sent, UINT expected);
 
     std::mutex target_mutex_;
     RECT target_{0, 0, 1, 1};
 
-    std::atomic<bool> drag_active_{false};
+    // Guards drag_active_ AND every injection callback run through
+    // TransitionDragLocked -- see that method's doc comment (必須1/必須3).
+    // mutable: DragActive() is const but still needs the lock to read a
+    // plain (non-atomic) bool safely.
+    mutable std::mutex drag_mutex_;
+    bool drag_active_ = false;  // guarded by drag_mutex_, NOT atomic anymore
 
     std::atomic<long long> moves_{0};
     std::atomic<long long> taps_{0};

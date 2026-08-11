@@ -108,11 +108,29 @@ Pipeline::~Pipeline() {
     // tear injector_ down BEFORE sender_ -- leaving a window where the
     // still-running receiver thread locks an already-destroyed
     // InputInjector's mutex if a touch message arrives during teardown
-    // (quit/suspend/session-limit while touch is flowing; review 2026-08-11
-    // finding 必須3). Closing here, before any member destructor runs,
-    // joins the receiver thread first and removes that window without
-    // reordering the members themselves.
+    // (quit/suspend/session-limit while touch is flowing; review 2026-08-11,
+    // first drag-independent finding). Closing here, before any member
+    // destructor runs, joins the receiver thread first and removes that
+    // window without reordering the members themselves.
     sender_.Close();
+
+    // 必須2 (review 2026-08-11, second pass): Stop()'s own
+    // injector_.ReleaseDragIfActive() call runs BEFORE this point, i.e.
+    // before the receiver thread is guaranteed dead. A kind=4 (dragBegin)
+    // message that was already buffered in ReceiverLoop's socket buffer at
+    // that moment can still be dispatched to injector_.OnTouch() during the
+    // sender_.Close() join above, re-arming drag_active_ (pressing
+    // LEFTDOWN) AFTER Stop()'s release already ran -- and once
+    // sender_.Close() returns, the receiver thread is gone, so nothing is
+    // left to ever send the matching dragEnd. Calling
+    // ReleaseDragIfActive() again HERE, now that sender_.Close() has
+    // guaranteed no more touch messages can possibly arrive, is the only
+    // point in the whole teardown where that is true -- the genuine last
+    // chance to release a stuck button. Idempotent (a no-op when nothing is
+    // active), so this costs nothing on the far more common case where
+    // Stop()'s own release already handled it.
+    injector_.ReleaseDragIfActive();
+
     if (timer_period_raised_) {
         timeEndPeriod(1);
     }

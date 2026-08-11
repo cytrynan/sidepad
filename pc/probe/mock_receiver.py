@@ -45,11 +45,15 @@ def touch_frame(kind: int, source: int, x: int, y: int, dx: int, dy: int) -> byt
     return frame(MSG_TOUCH, TOUCH.pack(kind, source, x, y, dx, dy))
 
 
-# --send-touch-script のスクリプト本体: 四隅move→中央tap→scroll→長押しドラッグ。
+# --send-touch-script のスクリプト本体: 四隅move→中央tap→scroll→長押しドラッグ
+# (dragBegin→move×2→dragEnd)。
 # 期待座標は pc/probe/verify-touch-inject.ps1 がこの座標から独立に再計算して
 # GetCursorPos と突き合わせる（実装の式を写さない = judge-design.mdの教訓）。
 # dragBegin/dragEndの座標はG3(0x0001,0xFFFE)とは別に、四隅・中央と重ならない
-# 内部の点を2つ選んで軌跡判定を独立させる(2026-08-11 K承認の長押しドラッグ追加)。
+# 内部の点を選んで軌跡判定を独立させる(2026-08-11 K承認の長押しドラッグ追加)。
+# dragBegin〜dragEnd間の2発のkind=1 moveは「掴んだまま動く」の実測用
+# (レビュー2026-08-11 判定器補強2: 左ボタンDOWNのまま移動できることを
+# GetAsyncKeyStateで直接確認するverify-touch-inject.ps1の材料になる)。
 TOUCH_SCRIPT = [
     # kind, source, x,     y,     dx,  dy
     (1,     0,      0,     0,     0,   0),      # move: top-left corner
@@ -59,6 +63,8 @@ TOUCH_SCRIPT = [
     (2,     0,      32767, 32767, 0,   0),      # tap: center
     (3,     1,      32767, 32767, -10, 300),    # scroll: same magnitude as G2
     (4,     0,      16384, 16384, 0,   0),      # dragBegin: upper-left-ish
+    (1,     0,      27307, 16384, 0,   0),      # move while dragging (button held)
+    (1,     0,      38229, 27307, 0,   0),      # move while dragging (button held)
     (5,     0,      49151, 49151, 0,   0),      # dragEnd: lower-right-ish
 ]
 

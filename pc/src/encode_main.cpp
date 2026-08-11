@@ -302,40 +302,61 @@ int TouchSelfTest() {
         add("G2 dx=-10 -> HorizontalWheelDelta > 0", HorizontalWheelDelta(-10) > 0);
     }
 
-    // --- Long-press drag fail-safe state machine (design.md section 1,
-    // review 2026-08-11 addition) ---------------------------------------
-    // Deliberately calls ONLY BeginDragState()/EndDragState()/DragActive()
-    // -- the pure atomic-only half of the drag machine -- never OnTouch()
-    // or ReleaseDragIfActive() themselves, both of which conditionally call
-    // SendInput. This proves the fail-safe's state transitions without
+    // --- Long-press drag fail-safe state machine (design.md section 1;
+    // review 2026-08-11 findings 必須1/必須3) -----------------------------
+    // Deliberately calls ONLY TestTransitionDrag() -- which drives the
+    // SAME locked TransitionDragLocked() that OnTouch's dragBegin/dragEnd
+    // and ReleaseDragIfActive() use for real, but with a
+    // simulated-success/failure stand-in instead of a real SendInput call
+    // -- never OnTouch() or ReleaseDragIfActive() themselves. This proves
+    // both the state transitions AND the failure-rollback logic without
     // moving the real cursor or pressing the real left button, per the
     // task's "SendInput自体は発火しない形で状態だけ検証する" requirement.
     {
         InputInjector injector;  // fresh instance, target rect irrelevant here
         add("drag inactive by default", !injector.DragActive());
-        add("BeginDragState() 1st call transitions inactive->active (would inject LEFTDOWN)",
-            injector.BeginDragState());
-        add("DragActive() true after BeginDragState()", injector.DragActive());
-        add("BeginDragState() duplicate call returns false (design.md fail-safe (1), ignored)",
-            !injector.BeginDragState());
+        add("TestTransitionDrag(begin=true, ok) 1st call transitions inactive->active "
+            "(would inject LEFTDOWN)",
+            injector.TestTransitionDrag(/*begin=*/true, /*simulated_success=*/true));
+        add("DragActive() true after the begin transition", injector.DragActive());
+        add("TestTransitionDrag(begin=true, ...) duplicate call returns false "
+            "(design.md fail-safe 1, ignored -- injection callback never even runs)",
+            !injector.TestTransitionDrag(/*begin=*/true, /*simulated_success=*/true));
         add("DragActive() still true after the ignored duplicate", injector.DragActive());
-        add("EndDragState() transitions active->inactive (would inject LEFTUP; this is exactly "
-            "what ReleaseDragIfActive() does before its SendInput call)",
-            injector.EndDragState());
-        add("DragActive() false after EndDragState()", !injector.DragActive());
-        add("EndDragState() with nothing active returns false (no double LEFTUP)",
-            !injector.EndDragState());
+        add("TestTransitionDrag(begin=false, ok) transitions active->inactive "
+            "(would inject LEFTUP; this is exactly what ReleaseDragIfActive() does)",
+            injector.TestTransitionDrag(/*begin=*/false, /*simulated_success=*/true));
+        add("DragActive() false after the end transition", !injector.DragActive());
+        add("TestTransitionDrag(begin=false, ...) with nothing active returns false "
+            "(no double LEFTUP)",
+            !injector.TestTransitionDrag(/*begin=*/false, /*simulated_success=*/true));
         add("drags() counted exactly 1 completed drag", injector.drags() == 1);
 
-        // Re-arm to prove the SAME state machine is what
-        // ReleaseDragIfActive() (Pipeline::Stop()'s fail-safe call) relies
-        // on -- teardown-while-dragging must clear drag_active_.
-        injector.BeginDragState();
-        add("re-armed: DragActive() true", injector.DragActive());
-        add("EndDragState() drops it again (Pipeline::Stop()'s fail-safe path, state only)",
-            injector.EndDragState());
-        add("DragActive() false after the fail-safe-equivalent release", !injector.DragActive());
-        add("drags() now counts 2 completed drags", injector.drags() == 2);
+        // 必須3: a failed release (SendInput under-delivers) must NOT
+        // disarm the fail-safe -- drag_active_ has to roll back to true so
+        // a retry (another dragEnd, or Pipeline::~Pipeline()'s final
+        // ReleaseDragIfActive()) can still catch it.
+        injector.TestTransitionDrag(/*begin=*/true, /*simulated_success=*/true);
+        add("re-armed for the failure test: DragActive() true", injector.DragActive());
+        add("TestTransitionDrag(begin=false, FAILS) returns false (transition not committed)",
+            !injector.TestTransitionDrag(/*begin=*/false, /*simulated_success=*/false));
+        add("必須3: DragActive() STILL true after the failed release (rolled back, not disarmed)",
+            injector.DragActive());
+        add("drags() still 1 -- the failed release was not counted as completed",
+            injector.drags() == 1);
+        add("a SUBSEQUENT successful release now works (retry path)",
+            injector.TestTransitionDrag(/*begin=*/false, /*simulated_success=*/true));
+        add("DragActive() false after the retried release succeeds", !injector.DragActive());
+        add("drags() now counts 2 completed drags (the failed attempt didn't double-count)",
+            injector.drags() == 2);
+
+        // A failed BEGIN must also roll back (to inactive, not stuck
+        // active) -- symmetric application of the same rollback rule,
+        // though not itself the safety-critical direction.
+        add("TestTransitionDrag(begin=true, FAILS) returns false",
+            !injector.TestTransitionDrag(/*begin=*/true, /*simulated_success=*/false));
+        add("DragActive() false after a failed begin (rolled back, not stuck active)",
+            !injector.DragActive());
     }
 
     bool all_pass = true;
