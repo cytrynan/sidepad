@@ -195,6 +195,10 @@ while ($sw.ElapsedMilliseconds -lt $sampleUntilMs) {
     Start-Sleep -Milliseconds 50
 }
 Write-Host "collected $($samples.Count) cursor samples"
+# 事後診断用の全軌跡ダンプ（FAILが実装か干渉かサンプラかを後から切り分ける）
+$trajPath = Join-Path $env:TEMP "touch_trajectory.csv"
+$samples | Export-Csv -NoTypeInformation -Path $trajPath
+Write-Host "trajectory dumped: $trajPath"
 # サンプラ自身の瞬き検出: 最大採取間隔が送信間隔の半分を超えていたら、
 # ターゲット未到達FAILは「カーソルが行かなかった」ではなく「サンプラが
 # 見ていなかった」可能性がある（2026-08-11 実走1回目: PSの採取が~1.5s
