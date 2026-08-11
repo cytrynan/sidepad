@@ -171,6 +171,17 @@ while ($sw.ElapsedMilliseconds -lt $sampleUntilMs) {
     Start-Sleep -Milliseconds 50
 }
 Write-Host "collected $($samples.Count) cursor samples"
+# サンプラ自身の瞬き検出: 最大採取間隔が送信間隔の半分を超えていたら、
+# ターゲット未到達FAILは「カーソルが行かなかった」ではなく「サンプラが
+# 見ていなかった」可能性がある（2026-08-11 実走1回目: PSの採取が~1.5s
+# 途切れ、右下だけ偽FAILした実例）。判定器は自分の盲目時間を申告する。
+$maxGapMs = 0
+for ($i = 1; $i -lt $samples.Count; $i++) {
+    $gap = $samples[$i].ElapsedMs - $samples[$i - 1].ElapsedMs
+    if ($gap -gt $maxGapMs) { $maxGapMs = $gap }
+}
+Write-Host ("max sample gap: {0}ms {1}" -f $maxGapMs, `
+    ($maxGapMs -gt 750 ? '** WARNING: sampler blind spot exceeds half the send interval -- a target miss below may be a sampler blink, re-run before trusting a FAIL **' : '(ok)'))
 
 Wait-Process -Id $spike.Id -Timeout 10 -ErrorAction SilentlyContinue
 if (-not $spike.HasExited) { Stop-Process -Id $spike.Id -Force }
