@@ -24,7 +24,7 @@ if ($Status) {
     if (-not $t) { Write-Host "未登録"; exit 0 }
     $info = $t | Get-ScheduledTaskInfo
     Write-Host "登録済み: State=$($t.State) LastRun=$($info.LastRunTime) LastResult=$($info.LastTaskResult)"
-    Write-Host "実行ファイル: $($t.Actions[0].Execute)"
+    Write-Host "実行ファイル: $($t.Actions[0].Execute) $($t.Actions[0].Arguments)"
     exit 0
 }
 
@@ -51,7 +51,13 @@ if (-not (Test-Path $exe)) {
 $running = Get-Process -Name sidepadd -ErrorAction SilentlyContinue
 if ($running) { $running | Stop-Process -Force -Confirm:$false; Start-Sleep 1 }
 
-$action = New-ScheduledTaskAction -Execute $exe
+# コンソール窓を出さない（2026-10-12 K指示）: sidepadd.exe は CONSOLE サブシステムなので、
+# タスクから直接起動すると黒い窓がデスクトップに出続ける。run-hidden.vbs 経由で隠す。
+# stdout は %USERPROFILE%\.claude\logs\hidden\sidepadd.log へ（本体ログは従来どおり %LOCALAPPDATA%\sidepad）。
+$launcher = Join-Path $env:USERPROFILE '.claude\scripts\run-hidden.vbs'
+if (-not (Test-Path $launcher)) { Write-Host "NG: $launcher が無い" -ForegroundColor Red; exit 1 }
+$action = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\wscript.exe" `
+    -Argument "//B //Nologo `"$launcher`" sidepadd `"$exe`"" -WorkingDirectory (Split-Path -Parent $exe)
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 # 電源接続に関係なく動かす・時間制限なし（常駐のため）
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `

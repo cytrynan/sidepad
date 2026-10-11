@@ -323,7 +323,7 @@ pwsh -File pc\daemon\install-task.ps1 -Uninstall # 解除（プロセスも停�
 pwsh -File pc\daemon\install-task.ps1 -Status    # 状態表示（非管理者可）
 ```
 
-タスク名は `sidepadd`。起動/停止だけなら非管理者でも
+タスク名は `sidepadd`。**コンソール窓を出さないため `%USERPROFILE%\.claude\scripts\run-hidden.vbs` 経由で起動する**（2026-10-12〜。sidepadd.exe は CONSOLE サブシステムで、直接起動すると黒窓が常駐する。stdout は `%USERPROFILE%\.claude\logs\hidden\sidepadd.log`）。起動/停止だけなら非管理者でも
 `Start-ScheduledTask sidepadd` / `Stop-ScheduledTask sidepadd` が通る（所有者のため）。
 
 ### ログ・統計
